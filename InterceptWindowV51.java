@@ -3,7 +3,6 @@ package dev.leadshot;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
@@ -19,8 +18,6 @@ import java.util.UUID;
  */
 public final class InterceptWindowV51 {
     public static final InterceptWindowV51 INSTANCE = new InterceptWindowV51();
-    private static final double SPEED=CoreBallistics.FULL_BOW_SPEED;
-    private static final double RADIUS=.12;
     private static final double MIN_GAIN_DEGREES=.65;
     private boolean enabled;
     private int maxHoldTicks=2;
@@ -32,7 +29,6 @@ public final class InterceptWindowV51 {
     public record Decision(boolean permitExistingReleaseGate,int preferredWaitTicks,
                            int evaluatedCandidates,double presentScore,double bestFutureScore,
                            String reason) {}
-    private record Candidate(int delay,double score,int evaluations) {}
 
     public synchronized boolean enabled(){return enabled;}
     public synchronized void setEnabled(boolean enabled){this.enabled=enabled;reset();}
@@ -112,69 +108,29 @@ public final class InterceptWindowV51 {
         int allowedWait=Math.min(maxHoldTicks,theaterCap);
         if(tick-firstArmedTick>=allowedWait){windows++;return pass("maximum-wait-reached");}
         int maxDelay=Math.min(allowedWait,gliding?1:3);
-        int minPathLength=Math.min(CoreBallistics.MAX_TICKS,maxDelay+presentShot.ticks()+4);
-        List<CoreBallistics.Vec> path=path(curvedPath,targetCenter,targetVelocity,minPathLength);
-        if(path==null){bypasses++;return pass("missing-target-path");}
-        double immediate=angularError(presentShot,cameraYaw,cameraPitch)
-                +Math.min(2,presentShot.speedMismatch()*2);
-        if(!Double.isFinite(immediate)){bypasses++;return pass("invalid-present-angle");}
-        Candidate best=null;
-        int checks=0;
-        // At most three future release offsets, each with a bounded angular
-        // optimizer; no unbounded search, retained shot or simulated click.
-        for(int delay=1;delay<=maxDelay;delay++){
-            if(delay+presentShot.ticks()+1>=path.size())continue;
-            CoreBallistics.Vec futureOrigin=origin.add(inheritedVelocity.times(delay));
-            CoreBallistics.Vec futureCenter=path.get(delay);
-            CoreBallistics.Vec futureVelocity=path.get(delay+1).minus(path.get(delay));
-            List<CoreBallistics.Vec> futurePath=path.subList(delay,path.size());
-            CoreBallistics.Solution seed=CoreBallistics.solveRefined(futureOrigin,
-                    futureCenter,futureVelocity,inheritedVelocity,SPEED);
-            checks++;
-            if(seed==null||seed.ticks()<2||seed.ticks()>20
-                    ||seed.speedMismatch()>Math.max(.18,SPEED*.1))continue;
-            var fitted=CurvedAimOptimizerV492.optimize(futureOrigin,seed,
-                    inheritedVelocity,futureCenter,futureVelocity,halfBox,
-                    futurePath,SPEED,RADIUS);
-            checks+=fitted.evaluations();
-            if(!fitted.bothModelsHit())continue;
-            CoreBallistics.Solution future=fitted.shot();
-            double angular=angularError(future,cameraYaw,cameraPitch);
-            // Prefer a current valid shot over uncertain future geometry.
-            // The future must save at least 0.65 degrees after delay penalty.
-            double score=angular+delay*.32+Math.min(2,future.speedMismatch()*2);
-            if(Double.isFinite(score)&&(best==null||score<best.score()))
-                best=new Candidate(delay,score,checks);
+        if(policy==null){
+            // Older integrations keep their old conservative policy.
+            policy=EngagementProfileV511.assess(gliding,false,inheritedVelocity,
+                    targetVelocity,halfBox,presentShot.ticks(),curvedPath!=null);
         }
-        double requiredGain=policy==null?MIN_GAIN_DEGREES:
-                Math.max(MIN_GAIN_DEGREES,policy.minimumGainDegrees());
-        if(best==null||immediate-best.score()<requiredGain){
-            windows++;return new Decision(true,0,checks,immediate,
-                    best==null?Double.NaN:best.score(),"current-window-preferred");
+        var optimized=JointInterceptV512.evaluate(policy,gliding,cameraYaw,cameraPitch,
+                origin,inheritedVelocity,presentShot,targetCenter,targetVelocity,
+                halfBox,curvedPath,maxDelay);
+        int checks=optimized.candidatesChecked();
+        double present=optimized.presentScore();
+        double future=optimized.bestFutureScore();
+        double requiredGain=Math.max(MIN_GAIN_DEGREES,policy.minimumGainDegrees());
+        if(optimized.bestWaitTicks()==0 || !Double.isFinite(present) ||
+                !Double.isFinite(future) || present-future<requiredGain){
+            windows++;
+            return new Decision(true,0,checks,present,future,
+                    "current-window-preferred:"+optimized.reason());
         }
         holds++;
-        return new Decision(false,best.delay(),checks,immediate,best.score(),"future-window-preferred");
+        return new Decision(false,optimized.bestWaitTicks(),checks,present,future,
+                "joint-future-window-preferred:"+policy.theater());
     }
 
-    private static double angularError(CoreBallistics.Solution shot,double yaw,double pitch){
-        return Math.hypot(CoreBallistics.wrap(shot.yaw()-yaw),shot.pitch()-pitch);
-    }
-    private static List<CoreBallistics.Vec> path(List<CoreBallistics.Vec> predicted,
-            CoreBallistics.Vec center,CoreBallistics.Vec velocity,int minimum){
-        if(minimum<4||minimum>CoreBallistics.MAX_TICKS)return null;
-        if(predicted!=null){
-            if(predicted.size()<minimum+1||predicted.size()>CoreBallistics.MAX_TICKS+1)return null;
-            for(var c:predicted)if(c==null||!c.finite())return null;
-            return predicted;
-        }
-        var points=new ArrayList<CoreBallistics.Vec>(minimum+1);
-        for(int t=0;t<=minimum;t++){
-            var next=center.add(velocity.times(t));
-            if(!next.finite())return null;
-            points.add(next);
-        }
-        return points;
-    }
     private static Decision pass(String reason){
         return new Decision(true,0,0,Double.NaN,Double.NaN,reason);
     }
