@@ -136,6 +136,8 @@ public final class LeadShot implements ClientModInitializer {
     }
     private static void onTick(Minecraft mc){
         tick++;
+        // Never display a previous tick's READY or launch window after an early return.
+        InterceptHudV52.INSTANCE.clear();
         worldGuide = WorldGuideGeometry.Frame.empty();
         if(mc.level!=lastLevel){PreReadyAimV515.INSTANCE.reset();InterceptWindowV51.INSTANCE.reset();AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
@@ -524,6 +526,7 @@ public final class LeadShot implements ClientModInitializer {
         // Works in CENTER and RADAR; an explicit manual lock is optional.
         // Never steer toward other players or neutral mobs.
         boolean viewSteered=false;
+        boolean preHudActive=false, futureHudActive=false;
         // When opted-in, the flight governor gates READY even when autoaim is
         // not steering, e.g. an extreme dive or horizontal collision.
         GlideSteeringV50.Decision flightControl=GlideSteeringV50.INSTANCE.regulate(
@@ -551,6 +554,9 @@ public final class LeadShot implements ClientModInitializer {
                     readyState.ready(),shooter.getYRot(),shooter.getXRot(),
                     chosen.shot(),launchOrigin,shootVelocity,chosen.center(),
                     chosen.velocity(),adaptiveTargetPath);
+            // Read-only indicators: this is the actual goal selected for steering.
+            futureHudActive=aimingGoal.applied();
+            preHudActive=!futureHudActive && earlyGoal.applied();
             double goalYaw=aimingGoal.applied()?aimingGoal.yaw():earlyGoal.yaw();
             double goalPitch=aimingGoal.applied()?aimingGoal.pitch():earlyGoal.pitch();
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
@@ -610,6 +616,14 @@ public final class LeadShot implements ClientModInitializer {
                 shooter.getYRot(),shooter.getXRot(),launchOrigin,shootVelocity,
                 chosen.shot(),chosen.center(),chosen.velocity(),chosen.half(),
                 adaptiveTargetPath,engagement);
+        // Publish diagnostics already computed during this targeting tick.
+        // The HUD does not participate in or override any release authority.
+        InterceptHudV52.INSTANCE.publish(new InterceptHudV52.Frame(selected,tick,
+                engagement.theater(),readyState.ready(),bow && shooter.isUsingItem(),
+                preHudActive,futureHudActive,clearRoute,
+                InterceptWindowV51.INSTANCE.enabled(),
+                interceptIntent && !interceptWindow.permitExistingReleaseGate(),
+                interceptWindow.preferredWaitTicks(),interceptWindow.evaluatedCandidates()));
         if(RELEASE_GATE.allow(tick,guideOptions.assistedFire(),
                 mc.gui.screen()==null && mc.options.keyAttack.isDown() && mc.options.keyUse.isDown(),
                 bow,shooter.getTicksUsingItem()>=20,(chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),
@@ -804,6 +818,7 @@ public final class LeadShot implements ClientModInitializer {
             }
         }
         if(!options.hud())return;
+        drawInterceptHud(gfx,mc,w,h);
         if(guideOptions.hudStyle()==1 && w>=320 && h>=170){
             drawFlightHud(gfx,mc,w,h);
             return;
@@ -956,6 +971,32 @@ public final class LeadShot implements ClientModInitializer {
         }
     }
     /** Keep aircraft panel labels inside their assigned frame at 50–200% text sizes. */
+    /** v0.52: compact four-theater interception panel, read-only and tick-scoped.
+     * Never recomputes ballistic solutions during HUD rendering. */
+    private static void drawInterceptHud(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h){
+        InterceptHudV52.View v=InterceptHudV52.INSTANCE.view(tick,selected);
+        if(v==null||w<560||h<190)return;
+        double scale=guideOptions.fontScale();
+        int panelW=Math.min(230,Math.max(174,(int)Math.round(207*scale)));
+        int x=w-panelW-6,y=6;
+        if(guideOptions.hudStyle()==1 && w>=320 && h>=170){
+            int mode=FlightHudLayout.effectiveMode(options.mode(),h,scale,options.shadowAudit());
+            FlightHudLayout.Layout layout=FlightHudLayout.calculate(w,h,mode,scale);
+            if(layout.systems()==null)return;
+            y=layout.systems().y()+layout.systems().height()+7;
+        }
+        int row=Math.max(12,(int)Math.ceil(13*scale));
+        int panelH=row*4+9;
+        if(y+panelH>h-16)return;
+        gfx.fill(x,y,x+panelW,y+panelH,0xBE081724);
+        gfx.fill(x,y,x+panelW,y+2,0xFF60C9E9);
+        String[] rows={v.theaterText(),v.stateText(),v.guidanceText(),v.timingText()};
+        int[] colors={0xFF9CE5FF,v.stateColor(),0xFFD2E7F5,0xFF96ABB9};
+        for(int index=0;index<rows.length;index++){
+            String fitted=FlightHudLayout.fitText(rows[index],panelW-14,scale);
+            line(gfx,mc,fitted,x+7,y+5+index*row,colors[index]);
+        }
+    }
     private static void hudPanelLine(GuiGraphicsExtractor gfx,Minecraft mc,String text,int x,int y,int color,
                                      FlightHudLayout.Frame frame){
         if(frame==null || y+(int)Math.ceil(10*guideOptions.fontScale())>frame.y()+frame.height()-3)return;
