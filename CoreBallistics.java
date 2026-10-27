@@ -60,30 +60,59 @@ public final class CoreBallistics {
         }
         return best;
     }
-    /** Sub-tick refinement for the one selected fully-drawn target only.
-     * Retains integer-tick solve() for the 64-target warm cache. Fractional flight
-     * coefficients are linearly interpolated between vanilla discrete samples;
-     * ContactAudit still performs an independent swept collision test. */
+    /** Refine an intercept at sub-tick time resolution for the selected target.
+     * The coarse integer-tick solve is an initial hint. Bracketing a flight-time
+     * root and using binary search makes the required launch speed much closer
+     * to the true vanilla bow power (3.0) than a fixed 1/16-tick grid.
+     * Collision/obstruction/consensus MUST still be revalidated by the caller.
+     */
     public static Solution solveRefined(Vec eye,Vec center,Vec velocity,Vec shooterVelocity,double speed){
         Solution coarse=solve(eye,center,velocity,shooterVelocity,speed);
         if(coarse==null)return null;
         Solution best=coarse;
-        // Search a narrow interval around the integer optimum (33 samples max).
         int central=coarse.ticks();
+        for(int n=Math.max(2,central-3);n<=Math.min(MAX_TICKS-1,central+2);n++){
+            Solution a=solutionAt(eye,center,velocity,shooterVelocity,n,speed);
+            Solution b=solutionAt(eye,center,velocity,shooterVelocity,n+1,speed);
+            if(a==null||b==null)continue;
+            if(a.speedMismatch()<best.speedMismatch())best=a;
+            if(b.speedMismatch()<best.speedMismatch())best=b;
+            double diffA=a.launchVelocity().length()-speed;
+            double diffB=b.launchVelocity().length()-speed;
+            if(diffA*diffB>0)continue;
+            double lo=n,hi=n+1;
+            for(int i=0;i<26;i++){
+                double mid=(lo+hi)*.5;
+                Solution candidate=solutionAt(eye,center,velocity,shooterVelocity,mid,speed);
+                if(candidate==null)break;
+                if(candidate.speedMismatch()<best.speedMismatch())best=candidate;
+                double diff=candidate.launchVelocity().length()-speed;
+                if(Math.signum(diff)==Math.signum(diffA))lo=mid;
+                else hi=mid;
+            }
+        }
+        // If no root exists in the neighboring segments, retain a bounded
+        // fractional-grid search. This is useful for closest-approach shots.
         for(int k=-16;k<=16;k++){
-            double time=central+k/16.0;
-            if(time<2||time>MAX_TICKS)continue;
-            int low=(int)Math.floor(time),high=Math.min(MAX_TICKS,low+1);
-            double fraction=time-low;
-            double sum=FLIGHT_SUM[low]+fraction*(FLIGHT_SUM[high]-FLIGHT_SUM[low]);
-            double drop=FLIGHT_DROP[low]+fraction*(FLIGHT_DROP[high]-FLIGHT_DROP[low]);
-            Vec future=center.add(velocity.times(time));
-            Vec launch=future.minus(eye).add(new Vec(0,drop,0)).times(1/sum).minus(shooterVelocity);
-            double mismatch=Math.abs(launch.length()-speed);
-            if(launch.finite()&&Double.isFinite(mismatch)&&mismatch<best.speedMismatch())
-                best=new Solution(launch,future,(int)Math.round(time),mismatch);
+            double t=central+k/16.0;
+            if(t<2||t>MAX_TICKS)continue;
+            Solution candidate=solutionAt(eye,center,velocity,shooterVelocity,t,speed);
+            if(candidate!=null&&candidate.speedMismatch()<best.speedMismatch())best=candidate;
         }
         return best;
+    }
+    private static Solution solutionAt(Vec eye,Vec center,Vec velocity,
+            Vec shooterVelocity,double time,double speed){
+        int lower=(int)Math.floor(time),upper=Math.min(MAX_TICKS,lower+1);
+        if(lower<1||upper>MAX_TICKS)return null;
+        double alpha=time-lower;
+        double sum=FLIGHT_SUM[lower]+alpha*(FLIGHT_SUM[upper]-FLIGHT_SUM[lower]);
+        double drop=FLIGHT_DROP[lower]+alpha*(FLIGHT_DROP[upper]-FLIGHT_DROP[lower]);
+        Vec future=center.add(velocity.times(time));
+        Vec launch=future.minus(eye).add(new Vec(0,drop,0)).times(1/sum).minus(shooterVelocity);
+        double mismatch=Math.abs(launch.length()-speed);
+        return launch.finite()&&Double.isFinite(mismatch)
+                ? new Solution(launch,future,(int)Math.round(time),mismatch):null;
     }
     public static double vanillaBowPower(int useTicks) {
         double f=Math.max(0,Math.min(40,useTicks))/20.0;

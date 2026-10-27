@@ -63,6 +63,7 @@ public final class LeadShot implements ClientModInitializer {
     private static final Path ADVANCED_CONFIG = FabricLoader.getInstance().getConfigDir().resolve("leadshot-aim-advanced.properties");
     private static AdvancedAimOptions advancedAim = AdvancedAimOptions.defaults();
     private static final MultiplayerAimSync AIM_SYNC = new MultiplayerAimSync();
+    private static final ManualRetargetController RETARGET = new ManualRetargetController();
     private static List<ScanContact> scanContacts = List.of();
     private static long lastUseAttemptTick=Long.MIN_VALUE;
     private static final Path GUIDE_CONFIG = FabricLoader.getInstance().getConfigDir().resolve("leadshot-guides.properties");
@@ -86,6 +87,7 @@ public final class LeadShot implements ClientModInitializer {
     private static UUID selected;
     private static Preview preview = Preview.empty();
     private static final GuideFrameSmoother SMOOTHER = new GuideFrameSmoother();
+    private static final ScanRayCache LOS_CACHE = new ScanRayCache();
     private static final AimReadySignal READY = new AimReadySignal();
     private static AimReadySignal.State readyState = new AimReadySignal.State(false,false,0);
     private static long readyFlashUntil = -1;
@@ -125,20 +127,20 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){lastLevel=mc.level;observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
+        if(mc.level!=lastLevel){lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
         while(MARKERS.consumeClick())if(mc.gui.screen()==null)mutate("guide");
         while(MODES.consumeClick())if(mc.gui.screen()==null)mutate("mode");
-        while(LOCK_MODE.consumeClick())if(mc.gui.screen()==null){locked=!locked;selected=null;SMOOTHER.reset();nextLockRequested=false;}
-        while(LOCK_NEXT.consumeClick())if(mc.gui.screen()==null){locked=true;nextLockRequested=true;}
-        while(LOCK_CLEAR.consumeClick())if(mc.gui.screen()==null){locked=false;selected=null;SMOOTHER.reset();nextLockRequested=false;}
+        while(LOCK_MODE.consumeClick())if(mc.gui.screen()==null){locked=!locked;selected=null;SMOOTHER.reset();RETARGET.reset();nextLockRequested=false;}
+        while(LOCK_NEXT.consumeClick())if(mc.gui.screen()==null){locked=true;RETARGET.reset();nextLockRequested=true;}
+        while(LOCK_CLEAR.consumeClick())if(mc.gui.screen()==null){locked=false;selected=null;SMOOTHER.reset();RETARGET.reset();nextLockRequested=false;}
         while(AIM_ASSIST.consumeClick())if(mc.gui.screen()==null)changeGuide("autoaim");
         while(HUD_STYLE.consumeClick())if(mc.gui.screen()==null)changeGuide("hudstyle");
         while(SETTINGS.consumeClick())if(mc.gui.screen()==null)mc.gui.setScreen(new LeadShotSettingsScreen());
         LocalPlayer shooter=mc.player;
-        if(shooter==null||mc.level==null){preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);previousBowUse=false;RELEASE_GATE.reset();AIM_SYNC.reset();scanContacts=List.of();return;}
+        if(shooter==null||mc.level==null){preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);previousBowUse=false;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();return;}
         AABB search=shooter.getBoundingBox().inflate(guideOptions.depthBlocks());
         List<LivingEntity> nearby=mc.level.getEntitiesOfClass(LivingEntity.class,search,
                 e->e!=shooter && e.isAlive() && !e.isSpectator() && eligible(e)
@@ -229,8 +231,9 @@ public final class LeadShot implements ClientModInitializer {
                 && preview.solution()!=null && preview.shooterVelocity()!=null) {
             // Bow use cessation is a CANDIDATE; it is not a verified projectile.
             // A release is only counted as observed after an owned arrow appears.
-            ARROW_AUDIT.noteUseEnd(tick, vec(shooter.getEyePosition()),
-                    preview.solution().launchVelocity().add(preview.shooterVelocity()));
+            CoreBallistics.Vec actualArrow=ActualBowShot.initialVelocity(preview.solution(),
+                    preview.shooterVelocity(),CoreBallistics.FULL_BOW_SPEED);
+            if(actualArrow!=null)ARROW_AUDIT.noteUseEnd(tick, preview.eye(),actualArrow);
         }
         if(options.shadowAudit()) {
             // Reads client-visible entities only. A null/missing arrow owner is
@@ -273,7 +276,7 @@ public final class LeadShot implements ClientModInitializer {
             return;
         }
         if(!bow){
-            SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
+            RETARGET.reset();SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
             acquireRadarWithoutBow(mc,shooter,targets,count);
             return;
         }
@@ -292,7 +295,13 @@ public final class LeadShot implements ClientModInitializer {
         double speed=CoreBallistics.FULL_BOW_SPEED*power;
         if(speed<.3){SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;}
         CoreBallistics.Vec eye=vec(shooter.getEyePosition());
-        CoreBallistics.Vec shootVelocity=vec(shooter.getDeltaMovement());
+        BowFlightFrame.Frame shotFrame=BowFlightFrame.prepare(eye,vec(shooter.getDeltaMovement()),
+                shooter.onGround(),advancedAim.latencyTicks());
+        CoreBallistics.Vec shootVelocity=shotFrame.inheritedVelocity();
+        CoreBallistics.Vec launchOrigin=shotFrame.origin();
+        // Read camera position BEFORE applying our own rotation on this tick.
+        boolean playerRetargeting=guideOptions.autoAim()
+                && RETARGET.observe(tick,shooter.getYRot(),shooter.getXRot());
         Candidate best=null, previous=null;
         List<Candidate> candidates=new ArrayList<>();
         // Constrain per-tick work; protect a selected target outside the near-only cap.
@@ -312,9 +321,9 @@ public final class LeadShot implements ClientModInitializer {
             CoreBallistics.Vec velocity=ballisticSpeeds.get(entity.getUUID());
             CoreBallistics.Vec compensated=TargetVelocityFilter.lead(center,velocity,advancedAim.latencyTicks());
             CoreBallistics.Solution shot=depthPlan.precomputesBallistics()
-                    ? WARM.peek(entity.getUUID(),tick,eye,compensated,velocity,
+                    ? WARM.peek(entity.getUUID(),tick,launchOrigin,compensated,velocity,
                         shootVelocity,depthPlan.cacheTtlTicks()) : null;
-            if(shot==null)shot=CoreBallistics.solve(eye,compensated,velocity,shootVelocity,speed);
+            if(shot==null)shot=CoreBallistics.solve(launchOrigin,compensated,velocity,shootVelocity,speed);
             if(shot==null||shot.speedMismatch()>Math.max(.18,speed*.10))continue;
             double yaw=Math.abs(CoreBallistics.wrap(shot.yaw()-shooter.getYRot()));
             double pitch=Math.abs(shot.pitch()-shooter.getXRot());
@@ -343,7 +352,7 @@ public final class LeadShot implements ClientModInitializer {
             if(best==null||c.score()<best.score())best=c;
             if(entity.getUUID().equals(selected))previous=c;
         }
-        if(best==null){if(!locked)selected=null;radarMark=null;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;}
+        if(best==null){if(!locked)selected=null;radarMark=null;RETARGET.reset();SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;}
         Candidate chosen=best;
         if(locked){
             // If an existing lock goes out of view/range, NEVER silently follow a different mob.
@@ -366,9 +375,21 @@ public final class LeadShot implements ClientModInitializer {
             }else if(previous!=null)chosen=previous;
         }else if(AimTargetRetention.holdPrevious(
                 AimTargetRetention.active(guideOptions.autoAim(),bow), previous!=null)){
-            // During a drawn-bow assist cycle keep tracking the *same UUID*,
-            // even if its body moves away from the crosshair as lead is applied.
-            chosen=previous;
+            // Retain ballistic lead while the camera moves under OUR control.
+            // But permit a voluntary camera turn to a different centered body.
+            Candidate pointed=null;
+            for(Candidate c:candidates){
+                double miss=currentReticleMiss(shooter,c.entity());
+                if(pointed==null || miss<currentReticleMiss(shooter,pointed.entity()))pointed=c;
+            }
+            double oldMiss=currentReticleMiss(shooter,previous.entity());
+            double newMiss=pointed==null?Double.POSITIVE_INFINITY:currentReticleMiss(shooter,pointed.entity());
+            if(pointed!=null && !pointed.entity().getUUID().equals(previous.entity().getUUID())
+                    && RETARGET.switchTo(playerRetargeting,locked,newMiss,oldMiss)){
+                chosen=pointed;
+                RETARGET.switched();
+                playerRetargeting=false;
+            }else chosen=previous;
         }else if(previous!=null && previous!=best){
             double previousDirect=currentReticleMiss(shooter,previous.entity());
             double bestDirect=currentReticleMiss(shooter,best.entity());
@@ -378,35 +399,44 @@ public final class LeadShot implements ClientModInitializer {
         // ALWAYS recompute the selected trajectory from CURRENT observation before
         // contact tests, guidance, READY, steering or assisted fire. Cached hints
         // must never authorize a shot or display falsely fresh contact geometry.
-        CoreBallistics.Solution preciseShot=CoreBallistics.solveRefined(eye,chosen.center(),chosen.velocity(),
+        CoreBallistics.Solution preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),chosen.velocity(),
                 shootVelocity,CoreBallistics.FULL_BOW_SPEED);
         if(preciseShot==null || preciseShot.speedMismatch()>Math.max(.18,speed*.10)){
             radarMark=null;
             SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;
         }
-        ContactAudit.Result preciseContact=ContactAudit.evaluate(eye,preciseShot,chosen.center(),
+        ContactAudit.Result preciseContact=ContactAudit.evaluate(launchOrigin,preciseShot,chosen.center(),
                 chosen.velocity(),chosen.half(),shootVelocity,speed,Math.max(.18,speed*.10));
         chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),chosen.velocity(),
                 chosen.half(),preciseContact,chosen.score());
-        WARM.store(selected,tick,eye,chosen.center(),chosen.velocity(),shootVelocity,preciseShot);
+        // Vanilla launches the bow at EXACT full-charge speed. The inverse solver
+        // returns a REQUIRED speed which may differ. All downstream simulation
+        // must use the actual normalized bow direction and inherited momentum.
+        CoreBallistics.Vec actualArrow=ActualBowShot.initialVelocity(preciseShot,
+                shootVelocity,CoreBallistics.FULL_BOW_SPEED);
+        if(actualArrow==null){
+            SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
+            return;
+        }
+        WARM.store(selected,tick,launchOrigin,chosen.center(),chosen.velocity(),shootVelocity,preciseShot);
         radarMark=new RadarMark(selected,chosen.center(),chosen.entity().getName().getString(),locked);
         // Ray-test only the ONE selected solution, not every candidate. A geometric
         // contact is necessary but never sufficient for an actual successful hit.
         BallisticOcclusion.Result obstruction = options.blockCheck() && chosen.collision().geometricContact()
-                ? BallisticOcclusion.evaluate(eye,
-                        chosen.shot().launchVelocity().add(shootVelocity),
+                ? BallisticOcclusion.evaluate(launchOrigin,
+                        actualArrow,
                         chosen.collision().contactTick(),
                         ClientBlockOcclusion.probe(mc.level, shooter))
                 : new BallisticOcclusion.Result(BallisticOcclusion.State.UNCHECKED,0,0,Double.NaN);
         // Only evaluate the selected candidate to keep CPU cost bounded.
         TrajectoryConsensus.Result consensus = TrajectoryConsensus.evaluate(
-                eye, chosen.shot().launchVelocity().add(shootVelocity),
+                launchOrigin, actualArrow,
                 chosen.center(), chosen.velocity(), chosen.half(), .12,
                 Math.min(CoreBallistics.MAX_TICKS, chosen.shot().ticks()+3));
         if(options.guide()) {
-            worldGuide=WorldGuideGeometry.build(eye, chosen.shot().yaw(), chosen.shot().pitch(),
+            worldGuide=WorldGuideGeometry.build(launchOrigin, chosen.shot().yaw(), chosen.shot().pitch(),
                     shooter.getYRot(), shooter.getXRot(),chosen.shot().futureCenter(),
-                    chosen.half(),chosen.shot().launchVelocity().add(shootVelocity),
+                    chosen.half(),actualArrow,
                     chosen.shot().ticks(),options.trajectory());
         }
         // The HUD renders at display FPS, not Minecraft's 20-tick sampling rate.
@@ -414,7 +444,7 @@ public final class LeadShot implements ClientModInitializer {
         // CURRENT camera to keep mouse movement immediate. Lock switches snap.
         SMOOTHER.observe(selected,new GuideFrameSmoother.Frame(
                 chosen.shot().yaw(),chosen.shot().pitch(),chosen.shot().futureCenter(),
-                eye,chosen.shot().launchVelocity().add(shootVelocity),chosen.shot().ticks()));
+                launchOrigin,actualArrow,chosen.shot().ticks()));
         ShotConfidence.Status status=ShotConfidence.classify(chosen.collision(),consensus,obstruction);
         // Steering requires a deliberate lock and a clear, checked projectile route.
         // This deliberately does not aim at neutral mobs through unchecked terrain.
@@ -425,7 +455,7 @@ public final class LeadShot implements ClientModInitializer {
         // Aim guidance needs an unobstructed geometric solution, NOT unanimous
         // three-model support. Otherwise it may never move for multiplayer mobs.
         // READY and firing stay strict; this relaxes only steering eligibility.
-        if(AssistEligibilityV43.maySteer(guideOptions.autoAim(),
+        if(!playerRetargeting && AssistEligibilityV43.maySteer(guideOptions.autoAim(),
                 (chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),chosen.collision().geometricContact(),
                 clearRoute,guideOptions.lineOfSightOnly(),mc.gui.screen()==null)){
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
@@ -439,13 +469,14 @@ public final class LeadShot implements ClientModInitializer {
                 shooter.setXRot((float)move.pitch());
             }
         }
+        RETARGET.remember(tick,shooter.getYRot(),shooter.getXRot());
         AIM_SYNC.observe(selected,tick,viewSteered);
         // A moving, distant or small target gets a narrower READY cone.
         AimReadinessCriteria.Bounds limits=AimReadinessCriteria.bounds(
                 shooter.distanceTo(chosen.entity()),chosen.half(),chosen.velocity().length());
         readyState=READY.update(selected,tick,
                 CoreBallistics.wrap(chosen.shot().yaw()-shooter.getYRot()),
-                chosen.shot().pitch()-shooter.getXRot(),status,power>=0.99,
+                chosen.shot().pitch()-shooter.getXRot(),status,power>=0.99 && !playerRetargeting,
                 limits.yawDegrees(),limits.pitchDegrees());
         if(readyState.pulse() && guideOptions.cueMode()>=1){
             readyFlashUntil=tick+4;
@@ -462,7 +493,7 @@ public final class LeadShot implements ClientModInitializer {
                 bow,shooter.getTicksUsingItem()>=20,(chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),
                 clearRoute && status==ShotConfidence.Status.CONSISTENT_ESTIMATE
                         && guideOptions.lineOfSightOnly() && AIM_SYNC.ready(selected,tick),
-                readyState.ready() && shooter.getTicksUsingItem()>=23) && mc.gameMode!=null){
+                readyState.ready() && !playerRetargeting && shooter.getTicksUsingItem()>=23) && mc.gameMode!=null){
             // Packet order matters on dedicated servers: RELEASE_USE_ITEM does not
             // contain the camera direction. Use an ordinary vanilla rotation update
             // before the ordinary release action, never invent projectile hits.
@@ -474,7 +505,7 @@ public final class LeadShot implements ClientModInitializer {
         }
         preview=new Preview(chosen.entity().getName().getString(),
                 chosen.entity() instanceof Player?"プレイヤー":chosen.entity() instanceof Enemy?"敵対モブ":"モブ",
-                shooter.distanceTo(chosen.entity()),eye,shootVelocity,chosen.shot(),chosen.collision(),true,chosen.half(),obstruction,consensus);
+                shooter.distanceTo(chosen.entity()),launchOrigin,shootVelocity,chosen.shot(),chosen.collision(),true,chosen.half(),obstruction,consensus);
     }
     /** Cheap all-mode entity ranking: avoid repeated 80-tick trajectory simulations. */
     private static double preliminaryScore(LocalPlayer shooter,LivingEntity entity){
@@ -524,7 +555,10 @@ public final class LeadShot implements ClientModInitializer {
             List<LivingEntity> targets,Map<UUID,CoreBallistics.Vec> speeds,PrecomputePolicy.Plan plan){
         if(!plan.precomputesBallistics())return;
         CoreBallistics.Vec eye=vec(shooter.getEyePosition());
-        CoreBallistics.Vec shooterVelocity=vec(shooter.getDeltaMovement());
+        BowFlightFrame.Frame shotFrame=BowFlightFrame.prepare(eye,vec(shooter.getDeltaMovement()),
+                shooter.onGround(),advancedAim.latencyTicks());
+        CoreBallistics.Vec launchOrigin=shotFrame.origin();
+        CoreBallistics.Vec shooterVelocity=shotFrame.inheritedVelocity();
         // Every tracked entity obtains a turn over successive ticks, not just
         // the nearest N entities. The per-tick cap bounds frame-time spikes.
         for(LivingEntity entity:PRECOMPUTE_ORDER.next(targets,plan.heavyUpdatesPerTick(),LivingEntity::getUUID)){
@@ -534,7 +568,7 @@ public final class LeadShot implements ClientModInitializer {
             if(guideOptions.lineOfSightOnly()&&!canSeeBlockFree(mc,shooter,entity))continue;
             CoreBallistics.Vec center=TargetVelocityFilter.lead(
                     vec(entity.getBoundingBox().getCenter()),velocity,advancedAim.latencyTicks());
-            CoreBallistics.Solution shot=WARM.warm(id,tick,eye,center,velocity,
+            CoreBallistics.Solution shot=WARM.warm(id,tick,launchOrigin,center,velocity,
                     shooterVelocity,plan.cacheTtlTicks());
             if(shot==null)continue;
             STAGES.ballistic(id,tick);
@@ -543,14 +577,17 @@ public final class LeadShot implements ClientModInitializer {
             CoreBallistics.Vec half=new CoreBallistics.Vec(
                     Math.max(.01,box.getXsize()*.5),Math.max(.01,box.getYsize()*.5),
                     Math.max(.01,box.getZsize()*.5));
-            ContactAudit.Result contact=ContactAudit.evaluate(eye,shot,center,velocity,
+            CoreBallistics.Vec physicalVelocity=ActualBowShot.initialVelocity(shot,
+                    shooterVelocity,CoreBallistics.FULL_BOW_SPEED);
+            if(physicalVelocity==null)continue;
+            ContactAudit.Result contact=ContactAudit.evaluate(launchOrigin,shot,center,velocity,
                     half,shooterVelocity,CoreBallistics.FULL_BOW_SPEED,.30);
             BallisticOcclusion.Result blocks=options.blockCheck()&&contact.geometricContact()
-                    ? BallisticOcclusion.evaluate(eye,shot.launchVelocity().add(shooterVelocity),
+                    ? BallisticOcclusion.evaluate(launchOrigin,physicalVelocity,
                             contact.contactTick(),ClientBlockOcclusion.probe(mc.level,shooter))
                     : new BallisticOcclusion.Result(BallisticOcclusion.State.UNCHECKED,0,0,Double.NaN);
             TrajectoryConsensus.Result consensus=TrajectoryConsensus.evaluate(
-                    eye,shot.launchVelocity().add(shooterVelocity),center,velocity,half,.12,
+                    launchOrigin,physicalVelocity,center,velocity,half,.12,
                     Math.min(CoreBallistics.MAX_TICKS,shot.ticks()+3));
             STAGES.audited(id,tick,new StagedPrecomputeCache.Audit(contact,blocks,consensus));
         }
@@ -602,6 +639,9 @@ public final class LeadShot implements ClientModInitializer {
     }
     /** Conservative client-only raycast: unloaded chunks are NOT transparent. */
     private static boolean canSeeBlockFree(Minecraft mc,LocalPlayer shooter,LivingEntity target){
+        return LOS_CACHE.read(tick,target.getUUID(),()->rayCanSeeBlockFree(mc,shooter,target));
+    }
+    private static boolean rayCanSeeBlockFree(Minecraft mc,LocalPlayer shooter,LivingEntity target){
         Vec3 from=shooter.getEyePosition();
         Vec3 center=target.getBoundingBox().getCenter();
         if(!mc.level.hasChunkAt(BlockPos.containing(from))||
@@ -1088,7 +1128,7 @@ public final class LeadShot implements ClientModInitializer {
             case "blockcheck"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),o.shadowAudit(),o.category(),o.mode(),o.fov(),!o.blockCheck());
             default->o;
         };
-        if(action.equals("target")){SMOOTHER.reset();selected=null;observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();}
+        if(action.equals("target")){RETARGET.reset();SMOOTHER.reset();selected=null;observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();}
         if(action.equals("shadow")){SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();}
         try{options.write(CONFIG);}catch(Exception ex){System.err.println("[LeadShot] config save: "+ex);}
     }

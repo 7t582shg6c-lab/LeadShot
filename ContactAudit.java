@@ -12,8 +12,10 @@ public final class ContactAudit {
            !eye.finite()||!targetCenter.finite()||!targetVelocity.finite()||!halfSize.finite()||!shooterVelocity.finite()||
            !Double.isFinite(speed)||speed<=0||!Double.isFinite(mismatchLimit)||mismatchLimit<0)return new Result(State.INVALID,Double.NaN);
         if(shot.speedMismatch()>mismatchLimit)return new Result(State.UNSUPPORTED,Double.NaN);
+        CoreBallistics.Vec physicalVelocity=ActualBowShot.initialVelocity(shot,shooterVelocity,speed);
+        if(physicalVelocity==null)return new Result(State.INVALID,Double.NaN);
         ProjectileContactWindow.Contact hit=ProjectileContactWindow.earliest(
-            vec(eye),vec(shot.launchVelocity().add(shooterVelocity)),vec(targetCenter),vec(targetVelocity),vec(halfSize),.12,
+            vec(eye),vec(physicalVelocity),vec(targetCenter),vec(targetVelocity),vec(halfSize),.12,
             Math.min(120,Math.max(1,shot.ticks()+3)));
         return hit.intersects()?new Result(State.PLAUSIBLE,hit.tick()):new Result(State.UNSUPPORTED,Double.NaN);
     }
