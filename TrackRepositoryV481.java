@@ -53,6 +53,7 @@ public final class TrackRepositoryV481 {
         TimedObservationV48 latest;
         CoreBallistics.Vec previousVelocity;
         final List<Pending> pending = new ArrayList<>();
+        final AdaptiveMotionModelV482 adaptive = new AdaptiveMotionModelV482();
         Track(TimedObservationV48 first) { latest = first; previousVelocity = first.velocity(); }
     }
     public TrackRepositoryV481() {
@@ -91,6 +92,7 @@ public final class TrackRepositoryV481 {
                             double error = forecast.predicted().minus(now.center()).length();
                             if (Double.isFinite(error)) {
                                 scores.get(forecast.model()).record(error,forecast.horizonIndex());
+                                track.adaptive.record(forecast.model(),forecast.horizonIndex(),error);
                                 evaluated++;
                             }
                         }
@@ -153,6 +155,31 @@ public final class TrackRepositoryV481 {
         Track t=contacts.get(uuid);
         return t == null ? null : MotionForecastV481.estimate(
                 t.latest.center(),t.latest.velocity(),t.previousVelocity,horizon,model);
+    }
+    /** Selects CV/CA/CT from the target's own held-out accuracy data.
+     * This is diagnostic evidence, NOT an authorization to steer or fire.
+     */
+    public record AdaptiveForecast(MotionForecastV481.Model model,
+                                   MotionForecastV481.Estimate estimate,
+                                   long evaluatedSamples,double recentRms,boolean trained) {}
+    public AdaptiveForecast adaptiveForecast(UUID id,int horizon){
+        if(id==null||horizon<0||horizon>20)return null;
+        Track track=contacts.get(id);
+        if(track==null)return null;
+        var decision=track.adaptive.decision(horizon);
+        var predicted=MotionForecastV481.estimate(track.latest.center(),track.latest.velocity(),
+                track.previousVelocity,horizon,decision.model());
+        return predicted==null?null:new AdaptiveForecast(decision.model(),predicted,
+                decision.samples(),decision.recentRms(),decision.trained());
+    }
+    public Map<MotionForecastV481.Model,Integer> adaptiveCounts(int horizon){
+        var result=new EnumMap<MotionForecastV481.Model,Integer>(MotionForecastV481.Model.class);
+        for(var m:MotionForecastV481.Model.values())result.put(m,0);
+        for(Track t:contacts.values()){
+            var decision=t.adaptive.decision(horizon);
+            if(decision.trained())result.put(decision.model(),result.get(decision.model())+1);
+        }
+        return result;
     }
     public Summary summary() {
         var snap = new EnumMap<MotionForecastV481.Model,ModelScore>(MotionForecastV481.Model.class);

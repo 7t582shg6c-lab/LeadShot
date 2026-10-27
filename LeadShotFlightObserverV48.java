@@ -37,7 +37,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
     @Override public void onInitializeClient(){
         enabled=readEnabled();
         ClientTickEvents.END_CLIENT_TICK.register(this::sample);
-        System.out.println("[LeadShot v0.48.1] 飛行物理・時刻付き64体追跡の診断="+(enabled?"有効":"無効")+
+        System.out.println("[LeadShot v0.48.2] 飛行物理・時刻付き64体追跡・運動モデル適応の診断="+(enabled?"有効":"無効")+
                 " (config/leadshot-flight-shadow.properties)");
     }
     private static boolean readEnabled(){
@@ -95,10 +95,16 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
             var ca=motion.models().get(MotionForecastV481.Model.DAMPED_ACCELERATION);
             var turn=motion.models().get(MotionForecastV481.Model.DAMPED_TURN);
             System.out.printf(Locale.ROOT,
-                    "[LeadShot v0.48.1] 追跡体数=%d, 予測評価=%d, CV-RMS=%.3f, CA-RMS=%.3f, TURN-RMS=%.3f, 急機動=%d, 補正/転送=%d, 欠測=%d (観測のみ、命中予測には不使用)%n",
+                    "[LeadShot v0.48.2] 追跡体数=%d, 予測評価=%d, CV-RMS=%.3f, CA-RMS=%.3f, TURN-RMS=%.3f, 急機動=%d, 補正/転送=%d, 欠測=%d (観測のみ、命中予測には不使用)%n",
                     motion.active(),motion.evaluated(),cv.rootMeanSquare(),
                     ca.rootMeanSquare(),turn.rootMeanSquare(),motion.maneuvers(),
                     motion.teleports(),motion.gaps());
+            var model5=tracks.adaptiveCounts(5);
+            var model10=tracks.adaptiveCounts(10);
+            var model20=tracks.adaptiveCounts(20);
+            System.out.printf(Locale.ROOT,
+                    "[LeadShot v0.48.2] 学習済みモデル選択 5t=%s, 10t=%s, 20t=%s (CV/CA/CTの実測誤差を対象ごとに比較・発射には不使用)%n",
+                    model5,model10,model20);
             System.out.printf(Locale.ROOT,
                     "[LeadShot v0.48] 空中矢の観測ペア=%d RMS誤差=%.5f 最大誤差=%.5f 追跡矢=%d 欠測=%d (クライアント側の推定)%n",
                     state.measuredPairs(),state.rootMeanSquareError(),
