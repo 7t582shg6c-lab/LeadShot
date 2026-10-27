@@ -120,6 +120,8 @@ public final class LeadShot implements ClientModInitializer {
         advancedAim=AdvancedAimOptions.read(ADVANCED_CONFIG);
         AdaptiveLeadV49.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
                 .resolve("leadshot-adaptive-v049.properties"));
+        GlideSteeringV50.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
+                .resolve("leadshot-glide-v050.properties"));
         for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
@@ -515,6 +517,11 @@ public final class LeadShot implements ClientModInitializer {
         // Works in CENTER and RADAR; an explicit manual lock is optional.
         // Never steer toward other players or neutral mobs.
         boolean viewSteered=false;
+        // When opted-in, the flight governor gates READY even when autoaim is
+        // not steering, e.g. an extreme dive or horizontal collision.
+        GlideSteeringV50.Decision flightControl=GlideSteeringV50.INSTANCE.regulate(
+                shooter.getYRot(),shooter.getXRot(),shooter.getYRot(),shooter.getXRot(),
+                vec(shooter.getEyePosition()),shootVelocity,shooter.isFallFlying(),shooter.horizontalCollision);
         // Aim guidance needs an unobstructed geometric solution, NOT unanimous
         // three-model support. Otherwise it may never move for multiplayer mobs.
         // READY and firing stay strict; this relaxes only steering eligibility.
@@ -524,12 +531,21 @@ public final class LeadShot implements ClientModInitializer {
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
                     chosen.shot().yaw(),chosen.shot().pitch(),guideOptions.aimRateTenths()/10.0,true);
             if(move.moved()){
+                // v0.50: gliding camera movements affect the player's own
+                // flight path. Compare short predicted paths and bound the
+                // automatic turn before the vanilla camera orientation changes.
+                flightControl=GlideSteeringV50.INSTANCE.regulate(
+                        shooter.getYRot(),shooter.getXRot(),move.yaw(),move.pitch(),
+                        vec(shooter.getEyePosition()),shootVelocity,
+                        shooter.isFallFlying(),shooter.horizontalCollision);
                 // Small continuous lead corrections should not hold FIRE forever.
                 // Final rotation is explicitly transmitted before release.
-                viewSteered=Math.hypot(CoreBallistics.wrap(move.yaw()-shooter.getYRot()),
-                        move.pitch()-shooter.getXRot())>0.35;
-                shooter.setYRot((float)move.yaw());
-                shooter.setXRot((float)move.pitch());
+                viewSteered=Math.hypot(CoreBallistics.wrap(flightControl.yaw()-shooter.getYRot()),
+                        flightControl.pitch()-shooter.getXRot())>0.35;
+                if(Double.isFinite(flightControl.yaw())&&Double.isFinite(flightControl.pitch())){
+                    shooter.setYRot((float)flightControl.yaw());
+                    shooter.setXRot((float)flightControl.pitch());
+                }
             }
         }
         RETARGET.remember(tick,shooter.getYRot(),shooter.getXRot());
@@ -539,7 +555,8 @@ public final class LeadShot implements ClientModInitializer {
                 shooter.distanceTo(chosen.entity()),chosen.half(),chosen.velocity().length());
         readyState=READY.update(selected,tick,
                 CoreBallistics.wrap(chosen.shot().yaw()-shooter.getYRot()),
-                chosen.shot().pitch()-shooter.getXRot(),status,power>=0.99 && !playerRetargeting,
+                chosen.shot().pitch()-shooter.getXRot(),status,
+                power>=0.99 && !playerRetargeting && flightControl.fireStable(),
                 limits.yawDegrees(),limits.pitchDegrees());
         if(readyState.pulse() && guideOptions.cueMode()>=1){
             readyFlashUntil=tick+4;
