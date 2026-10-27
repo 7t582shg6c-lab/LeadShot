@@ -20,7 +20,16 @@ public final class JointInterceptV512 {
     private static final int MAX_FLIGHT=20;
 
     public record Evaluation(int bestWaitTicks,int candidatesChecked,
-            double presentScore,double bestFutureScore,String reason) {}
+            double presentScore,double bestFutureScore,String reason,
+            double futureYaw,double futurePitch) {
+        // Preserve the v0.51.3 API for diagnostics and existing callers.
+        public Evaluation(int wait,int checked,double now,double future,String reason){
+            this(wait,checked,now,future,reason,Double.NaN,Double.NaN);
+        }
+        public boolean hasFutureBearing(){
+            return bestWaitTicks>0 && Double.isFinite(futureYaw) && Double.isFinite(futurePitch);
+        }
+    }
 
     /** Lower scores represent easier, less grazing, less speculative shots. */
     public static Evaluation evaluate(EngagementProfileV511.Policy policy,
@@ -55,6 +64,8 @@ public final class JointInterceptV512 {
         // v0.51.3 ranks complete contact windows, not only the single most
         // convenient future bearing. Current release eligibility is untouched.
         var opportunities=new ArrayList<InterceptOpportunityV513.Sample>(requestedMaxDelay+1);
+        // Keep the bearing of each VERIFIED future shot, never a speculative seed.
+        CoreBallistics.Solution[] verifiedFuture=new CoreBallistics.Solution[requestedMaxDelay+1];
         opportunities.add(new InterceptOpportunityV513.Sample(0,now.value(),
                 now.dwellTicks(),now.clearance()));
         int checks=1;
@@ -81,17 +92,24 @@ public final class JointInterceptV512 {
             Score candidate=score(launch.origin(),launch.inherited(),fitted.shot(),
                     remaining,targetHalf,center,velocity,cameraYaw,cameraPitch,
                     delay,policy);
-            if(candidate!=null)opportunities.add(new InterceptOpportunityV513.Sample(
-                    delay,candidate.value(),candidate.dwellTicks(),candidate.clearance()));
+            if(candidate!=null){
+                verifiedFuture[delay]=fitted.shot();
+                opportunities.add(new InterceptOpportunityV513.Sample(
+                        delay,candidate.value(),candidate.dwellTicks(),candidate.clearance()));
+            }
         }
         var evidence=knownTargetPath!=null ? InterceptOpportunityV513.Evidence.TRAINED_CURVE
                 :InterceptOpportunityV513.Evidence.LINEAR_ONLY;
         var ranked=InterceptOpportunityV513.rank(policy,evidence,requestedMaxDelay,opportunities);
         if(ranked.bestDelayTicks()==0)return new Evaluation(0,checks,
                 ranked.currentCost(),Double.NaN,ranked.reason());
+        CoreBallistics.Solution best=verifiedFuture[ranked.bestDelayTicks()];
+        if(best==null || !Double.isFinite(best.yaw()) || !Double.isFinite(best.pitch()))
+            return new Evaluation(0,checks,ranked.currentCost(),Double.NaN,"missing-verified-bearing");
         return new Evaluation(ranked.bestDelayTicks(),checks,ranked.currentCost(),
                 ranked.bestFutureCost(),ranked.reason()+":valid="+ranked.validLaunchTicks()+
-                ":width="+ranked.bestContiguousWidth()+":evidence="+ranked.evidence());
+                ":width="+ranked.bestContiguousWidth()+":evidence="+ranked.evidence(),
+                best.yaw(),best.pitch());
     }
 
     private record Score(double value,double clearance,double dwellTicks) {}

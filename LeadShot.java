@@ -124,6 +124,8 @@ public final class LeadShot implements ClientModInitializer {
                 .resolve("leadshot-glide-v050.properties"));
         InterceptWindowV51.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
                 .resolve("leadshot-intercept-v051.properties"));
+        FutureAimV514.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
+                .resolve("leadshot-future-aim-v0514.properties"));
         for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
@@ -531,8 +533,15 @@ public final class LeadShot implements ClientModInitializer {
         if(!playerRetargeting && AssistEligibilityV43.maySteer(guideOptions.autoAim(),
                 (chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),steeringGeometry,
                 clearRoute,guideOptions.lineOfSightOnly(),mc.gui.screen()==null)){
+            // v0.51.4: apply at most one tick of previous, UUID-scoped future
+            // intercept advice. Never alter user retargeting or the release gate.
+            boolean heldForFutureAim=mc.gui.screen()==null && mc.options.keyAttack.isDown()
+                    && mc.options.keyUse.isDown() && bow && shooter.getTicksUsingItem()>=23;
+            FutureAimV514.Goal aimingGoal=FutureAimV514.INSTANCE.guide(
+                    selected,tick,heldForFutureAim,playerRetargeting,shooter.isFallFlying(),
+                    chosen.shot(),InterceptWindowV51.INSTANCE.futureGuide(selected,tick));
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
-                    chosen.shot().yaw(),chosen.shot().pitch(),guideOptions.aimRateTenths()/10.0,true);
+                    aimingGoal.yaw(),aimingGoal.pitch(),guideOptions.aimRateTenths()/10.0,true);
             if(move.moved()){
                 // v0.50: gliding camera movements affect the player's own
                 // flight path. Compare short predicted paths and bound the

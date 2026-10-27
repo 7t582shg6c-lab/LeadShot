@@ -25,6 +25,20 @@ public final class InterceptWindowV51 {
     private EngagementProfileV511.Theater armedTheater;
     private long firstArmedTick=Long.MIN_VALUE, previousTick=Long.MIN_VALUE;
     private long holds, windows, bypasses;
+    // One-tick advisory only. Never persisted as a target lock or release authority.
+    private FutureGuide futureGuide;
+    public record FutureGuide(UUID target,long validOnTick,int waitTicks,
+            double yaw,double pitch,EngagementProfileV511.Theater theater) {}
+
+    /** Peek next-tick advice only for the same UUID; expired advice is discarded. */
+    public synchronized FutureGuide futureGuide(UUID target,long tick){
+        if(!enabled||futureGuide==null)return null;
+        if(target==null||tick!=futureGuide.validOnTick()||!target.equals(futureGuide.target())){
+            futureGuide=null;
+            return null;
+        }
+        return futureGuide;
+    }
 
     public record Decision(boolean permitExistingReleaseGate,int preferredWaitTicks,
                            int evaluatedCandidates,double presentScore,double bestFutureScore,
@@ -42,7 +56,7 @@ public final class InterceptWindowV51 {
             maxHoldTicks=Math.max(0,Math.min(3,Integer.parseInt(p.getProperty("maxHoldTicks","2"))));
         }catch(Exception ignored){enabled=false;maxHoldTicks=2;}
     }
-    public synchronized void reset(){armedTarget=null;armedTheater=null;firstArmedTick=previousTick=Long.MIN_VALUE;}
+    public synchronized void reset(){armedTarget=null;armedTheater=null;firstArmedTick=previousTick=Long.MIN_VALUE;futureGuide=null;}
     public synchronized long holds(){return holds;}
     public synchronized long opportunities(){return windows;}
     public synchronized long bypasses(){return bypasses;}
@@ -106,7 +120,7 @@ public final class InterceptWindowV51 {
         previousTick=tick;
         int theaterCap=policy==null?maxHoldTicks:policy.maximumWaitTicks();
         int allowedWait=Math.min(maxHoldTicks,theaterCap);
-        if(tick-firstArmedTick>=allowedWait){windows++;return pass("maximum-wait-reached");}
+        if(tick-firstArmedTick>=allowedWait){futureGuide=null;windows++;return pass("maximum-wait-reached");}
         int maxDelay=Math.min(allowedWait,gliding?1:3);
         if(policy==null){
             // Older integrations keep their old conservative policy.
@@ -122,12 +136,17 @@ public final class InterceptWindowV51 {
         // JointInterceptV512 v0.51.3 returns degree-equivalent heuristic costs.
         // The policy threshold is now compared on a consistent cost scale.
         double requiredGain=Math.max(MIN_GAIN_DEGREES,policy.minimumGainDegrees());
-        if(optimized.bestWaitTicks()==0 || !Double.isFinite(present) ||
-                !Double.isFinite(future) || present-future<requiredGain){
+        if(optimized.bestWaitTicks()==0 || !optimized.hasFutureBearing()
+                || !Double.isFinite(present) || !Double.isFinite(future)
+                || present-future<requiredGain){
+            futureGuide=null;
             windows++;
             return new Decision(true,0,checks,present,future,
                     "current-window-preferred:"+optimized.reason());
         }
+        // Valid for exactly the next targeting tick, and for this UUID/theater.
+        futureGuide=new FutureGuide(target,tick+1,optimized.bestWaitTicks(),
+                optimized.futureYaw(),optimized.futurePitch(),policy.theater());
         holds++;
         return new Decision(false,optimized.bestWaitTicks(),checks,present,future,
                 "joint-future-window-preferred:"+policy.theater()+":"+optimized.reason());
