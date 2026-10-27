@@ -72,7 +72,7 @@ public final class LeadShot implements ClientModInitializer {
         static Preview charging(){return new Preview("検索中","-",0,null,null,null,null,true,null,null,null);}
     }
     private static KeyMapping key(String text,int id){
-        return new KeyMapping(text,InputConstants.Type.KEYSYM,id,CATEGORY);
+        return new KeyMapping(text,InputConstants.Type.KEYBOARD,id,CATEGORY);
     }
     @Override public void onInitializeClient(){
         try{options=LeadShotOptions.read(CONFIG);}catch(Exception e){System.err.println("[LeadShot] config read: "+e);}
@@ -228,7 +228,7 @@ public final class LeadShot implements ClientModInitializer {
     private static CoreBallistics.Vec vec(Vec3 v){return new CoreBallistics.Vec(v.x,v.y,v.z);}
     private static void drawHud(GuiGraphicsExtractor gfx){
         Minecraft mc=Minecraft.getInstance();
-        if(mc.player==null||mc.gui.screen()!=null||mc.options.hideGui)return;
+        if(mc.player==null||mc.gui.screen()!=null)return;
         int w=gfx.guiWidth(),h=gfx.guiHeight();if(w<100||h<80)return;
         if(options.guide()&&(!options.linked()||options.hud()))drawGuides(gfx,mc,w,h);
         if(!options.hud())return;
