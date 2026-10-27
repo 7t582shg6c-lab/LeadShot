@@ -92,8 +92,7 @@ public final class LeadShot implements ClientModInitializer {
 
     private record Tracked(CoreBallistics.Vec center, long tick, CoreBallistics.Vec filteredVelocity) {}
     private record RadarMark(UUID id, CoreBallistics.Vec center, String name, boolean locked) {}
-    private record ScanContact(UUID id, CoreBallistics.Vec center, double halfHeight,
-                               double horizontalRadius, boolean visible) {}
+    private record ScanContact(UUID id, CoreBallistics.Vec previous, CoreBallistics.Vec center, CoreBallistics.Vec half) {}
     private static RadarMark radarMark;
     private static int radarCount;
     private record Candidate(LivingEntity entity, CoreBallistics.Solution shot,
@@ -121,7 +120,7 @@ public final class LeadShot implements ClientModInitializer {
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
         HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT,
-                Identifier.fromNamespaceAndPath("leadshot", "hud"), (graphics,delta)->drawHud(graphics));
+                Identifier.fromNamespaceAndPath("leadshot", "hud"), (graphics,delta)->drawHud(graphics,delta.getGameTimeDeltaPartialTick(false)));
     }
     private static void onTick(Minecraft mc){
         tick++;
@@ -163,14 +162,20 @@ public final class LeadShot implements ClientModInitializer {
         if(overlayMode!=ScanOverlayPreference.OFF && options.guide()){
             List<ScanContact> contacts=new ArrayList<>(count);
             for(LivingEntity e:targets){
+                // Skip rear contacts before performing up to 8 camera projections.
+                if(Math.abs(currentBearingYaw(shooter,e))>95 ||
+                   Math.abs(currentBearingPitch(shooter,e))>85)continue;
                 AABB box=e.getBoundingBox();
-                // Do not raytrace a contact wholly behind our camera.
-                double yawTo=Math.abs(currentBearingYaw(shooter,e));
-                double pitchTo=Math.abs(currentBearingPitch(shooter,e));
-                if(yawTo>95||pitchTo>85)continue;
+                // Snapshot the real 3-axis hitbox, not an estimated screen size.
+                // The render pass uses Minecraft's live camera and FOV.
                 boolean visible=overlayMode==ScanOverlayPreference.ALL || canSeeBlockFree(mc,shooter,e);
-                if(visible)contacts.add(new ScanContact(e.getUUID(),vec(box.getCenter()),
-                        Math.max(.15,box.getYsize()*.5),Math.max(.15,Math.max(box.getXsize(),box.getZsize())*.5),true));
+                if(visible){
+                    CoreBallistics.Vec now=vec(box.getCenter());
+                    Tracked last=observations.get(e.getUUID());
+                    CoreBallistics.Vec previous=last!=null && tick-last.tick()==1?last.center():now;
+                    contacts.add(new ScanContact(e.getUUID(),previous,now,
+                            new CoreBallistics.Vec(box.getXsize()*.5,box.getYsize()*.5,box.getZsize()*.5)));
+                }
             }
             scanContacts=List.copyOf(contacts);
         }else scanContacts=List.of();
@@ -316,8 +321,12 @@ public final class LeadShot implements ClientModInitializer {
             if(!Double.isFinite(yaw)||!Double.isFinite(pitch))continue;
             // Search cone describes *visible body location*, not lead angle:
             // a moving body in the centre must not disappear when AIM moves aside.
+            // Do not disqualify the actively tracked target when steering moves
+            // the crosshair from its body onto the ballistic lead point.
+            boolean aimHold=AimTargetRetention.active(guideOptions.autoAim(),bow);
             if(guideOptions.searchMode()==0 &&
-                    currentReticleMiss(shooter,entity)>guideOptions.radiusDegrees())continue;
+                    currentReticleMiss(shooter,entity)>guideOptions.radiusDegrees() &&
+                    !AimTargetRetention.bypassCone(aimHold,selected,entity.getUUID()))continue;
             AABB bb=entity.getBoundingBox();
             CoreBallistics.Vec half=new CoreBallistics.Vec(
                     Math.max(.01,bb.getXsize()*.5),Math.max(.01,bb.getYsize()*.5),Math.max(.01,bb.getZsize()*.5));
@@ -355,6 +364,11 @@ public final class LeadShot implements ClientModInitializer {
                 chosen=candidates.get((index+1)%candidates.size());
                 nextLockRequested=false;
             }else if(previous!=null)chosen=previous;
+        }else if(AimTargetRetention.holdPrevious(
+                AimTargetRetention.active(guideOptions.autoAim(),bow), previous!=null)){
+            // During a drawn-bow assist cycle keep tracking the *same UUID*,
+            // even if its body moves away from the crosshair as lead is applied.
+            chosen=previous;
         }else if(previous!=null && previous!=best){
             double previousDirect=currentReticleMiss(shooter,previous.entity());
             double bestDirect=currentReticleMiss(shooter,best.entity());
@@ -610,7 +624,7 @@ public final class LeadShot implements ClientModInitializer {
         };
     }
     private static CoreBallistics.Vec vec(Vec3 v){return new CoreBallistics.Vec(v.x,v.y,v.z);}
-    private static void drawHud(GuiGraphicsExtractor gfx){
+    private static void drawHud(GuiGraphicsExtractor gfx,float partial){
         Minecraft mc=Minecraft.getInstance();
         if(mc.player==null||mc.gui.screen()!=null)return;
         int w=gfx.guiWidth(),h=gfx.guiHeight();if(w<100||h<80)return;
@@ -619,7 +633,7 @@ public final class LeadShot implements ClientModInitializer {
             gfx.fill(cx-1,cy-1,cx+2,cy+2,guideOptions.tint(0xFFFFFFFF));
         }
         if(options.guide()){
-            if(overlayMode!=ScanOverlayPreference.OFF)drawScanContacts(gfx,mc,w,h);
+            if(overlayMode!=ScanOverlayPreference.OFF)drawScanContacts(gfx,mc,w,h,partial);
             if(guideOptions.searchMode()==1||!options.linked()||options.hud()){
                 drawGuides(gfx,mc,w,h);
                 // Selected target remains highlighted when idle in either mode.
@@ -809,27 +823,22 @@ public final class LeadShot implements ClientModInitializer {
         gfx.fill(x-1,y-1,x+2,y+2,color);
     }
     /** Tiny projected contact corners, not a wall-penetrating world-space box. */
-    private static void drawScanContacts(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h){
+    private static void drawScanContacts(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h,float partial){
         if(scanContacts.isEmpty())return;
-        CoreBallistics.Vec eye=vec(mc.player.getEyePosition());
-        double yaw=mc.player.getYRot(),pitch=mc.player.getXRot();
         for(ScanContact c:scanContacts){
-            AimProjection.Point center=AimProjection.world(eye,c.center(),yaw,pitch,w,h,options.fov());
-            if(center==null||!center.visible())continue;
-            CoreBallistics.Vec top=c.center().add(new CoreBallistics.Vec(0,c.halfHeight(),0));
-            CoreBallistics.Vec bottom=c.center().add(new CoreBallistics.Vec(0,-c.halfHeight(),0));
-            AimProjection.Point a=AimProjection.world(eye,top,yaw,pitch,w,h,options.fov());
-            AimProjection.Point b=AimProjection.world(eye,bottom,yaw,pitch,w,h,options.fov());
-            if(a==null||b==null||!a.inFront()||!b.inFront())continue;
-            int halfHeight=(int)Math.max(4,Math.min(40,Math.abs(b.y()-a.y())*.5));
-            int halfWidth=(int)Math.max(4,Math.min(42,halfHeight*c.horizontalRadius()/c.halfHeight()));
-            int x=(int)Math.round(center.x()),y=(int)Math.round(center.y());
-            if(x-halfWidth<3||y-halfHeight<3||x+halfWidth>=w-3||y+halfHeight>=h-3)continue;
+            // projectPointToScreen reads the actual renderer camera (including
+            // third-person offset, interpolated view and dynamic FOV). Project all
+            // eight corners: a body moving to the side cannot use a fixed width
+            // derived from its apparent height.
+            ScanBoxGeometry.Bounds box=ScanBoxGeometry.project(
+                    ScanBoxGeometry.interpolate(c.previous(),c.center(),partial),c.half(),w,h,
+                    p->WorldHudProjection.project(mc,p,w,h));
+            if(box==null)continue;
             boolean active=c.id().equals(selected);
             int rgb=active?guideOptions.tint(0xFF73F8C2):0x7249CFEA;
             int t=active?Math.max(1,guideOptions.thickness()):1;
-            int span=Math.max(3,Math.min(8,Math.min(halfHeight,halfWidth)));
-            int l=x-halfWidth,r=x+halfWidth,u=y-halfHeight,d=y+halfHeight;
+            int l=box.left(),r=box.right(),u=box.top(),d=box.bottom();
+            int span=Math.max(3,Math.min(8,Math.min((d-u)/2,(r-l)/2)));
             gfx.fill(l,u,l+span,u+t,rgb);gfx.fill(l,u,l+t,u+span,rgb);
             gfx.fill(r-span,u,r,u+t,rgb);gfx.fill(r-t,u,r,u+span,rgb);
             gfx.fill(l,d-t,l+span,d,rgb);gfx.fill(l,d-span,l+t,d,rgb);
@@ -839,8 +848,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void drawRadarMarker(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h){
         RadarMark mark=radarMark;
         if(mark==null || mc.player==null)return;
-        AimProjection.Point p=AimProjection.world(vec(mc.player.getEyePosition()),mark.center(),
-                mc.player.getYRot(),mc.player.getXRot(),w,h,options.fov());
+        AimProjection.Point p=WorldHudProjection.project(mc,mark.center(),w,h);
         if(p==null)return;
         int color=guideOptions.tint(mark.locked()?0xFF80F7C7:0xFF74C9FF);
         if(!p.inFront()){
