@@ -60,6 +60,31 @@ public final class CoreBallistics {
         }
         return best;
     }
+    /** Sub-tick refinement for the one selected fully-drawn target only.
+     * Retains integer-tick solve() for the 64-target warm cache. Fractional flight
+     * coefficients are linearly interpolated between vanilla discrete samples;
+     * ContactAudit still performs an independent swept collision test. */
+    public static Solution solveRefined(Vec eye,Vec center,Vec velocity,Vec shooterVelocity,double speed){
+        Solution coarse=solve(eye,center,velocity,shooterVelocity,speed);
+        if(coarse==null)return null;
+        Solution best=coarse;
+        // Search a narrow interval around the integer optimum (33 samples max).
+        int central=coarse.ticks();
+        for(int k=-16;k<=16;k++){
+            double time=central+k/16.0;
+            if(time<2||time>MAX_TICKS)continue;
+            int low=(int)Math.floor(time),high=Math.min(MAX_TICKS,low+1);
+            double fraction=time-low;
+            double sum=FLIGHT_SUM[low]+fraction*(FLIGHT_SUM[high]-FLIGHT_SUM[low]);
+            double drop=FLIGHT_DROP[low]+fraction*(FLIGHT_DROP[high]-FLIGHT_DROP[low]);
+            Vec future=center.add(velocity.times(time));
+            Vec launch=future.minus(eye).add(new Vec(0,drop,0)).times(1/sum).minus(shooterVelocity);
+            double mismatch=Math.abs(launch.length()-speed);
+            if(launch.finite()&&Double.isFinite(mismatch)&&mismatch<best.speedMismatch())
+                best=new Solution(launch,future,(int)Math.round(time),mismatch);
+        }
+        return best;
+    }
     public static double vanillaBowPower(int useTicks) {
         double f=Math.max(0,Math.min(40,useTicks))/20.0;
         return Math.min(1.0,(f*f+2*f)/3.0);

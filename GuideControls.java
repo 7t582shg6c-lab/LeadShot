@@ -77,7 +77,7 @@ public record GuideControls(int radiusDegrees, int depthBlocks, int thickness, i
     }
     public static GuideControls defaults() { return new GuideControls(24,48,2,210,0, true,true,true,false,2,1,2,0,false,false,2,1,1); }
     public GuideControls valid() { return new GuideControls(clamp(radiusDegrees,4,85),clamp(depthBlocks,8,128),
-            clamp(thickness,1,8),clamp(opacity,0,255),clamp(color,0,3),centerDot,labels,lineOfSightOnly,manualLock,clamp(smoothing,0,3),clamp(textSize,0,3),clamp(cueMode,0,2),clamp(searchMode,0,1),autoAim,assistedFire,clamp(assistSpeed,1,4),clamp(computationMode,0,3),clamp(hudStyle,0,1),clamp(fontPercent,50,200),clamp(aimRateTenths,1,120)); }
+            clamp(thickness,1,8),clamp(opacity,0,255),clamp(color,0,3),centerDot,labels,lineOfSightOnly,manualLock,clamp(smoothing,0,3),clamp(textSize,0,3),clamp(cueMode,0,2),clamp(searchMode,0,1),autoAim,assistedFire,clamp(assistSpeed,1,4),clamp(computationMode,0,3),clamp(hudStyle,0,1),clamp(fontPercent,50,200),clamp(aimRateTenths,1,1200)); }
     /** Immutable scalar mutation: never resets lock, firing, computation or style flags. */
     public GuideControls withNumeric(FineTuneParameter parameter,int raw){
         int v=parameter.clamp(raw);

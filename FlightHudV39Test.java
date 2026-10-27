@@ -34,8 +34,8 @@ public final class FlightHudV39Test {
     yes(FlightHudTheme.state(true,true,true,true,true)==FlightHudTheme.State.OBSTRUCTED,"blocked overrides ready");
     yes(FlightHudTheme.state(false,false,false,false,true)==FlightHudTheme.State.ACQUIRING,"charging");
     yes(FlightHudTheme.color(FlightHudTheme.State.READY)!=FlightHudTheme.color(FlightHudTheme.State.OBSTRUCTED),"distinct color");
-    yes(FlightHudTheme.radar(0).equals("BORESIGHT"),"mode name");
-    yes(FlightHudTheme.name(1).equals("TACTICAL"),"style name");
+    yes(FlightHudTheme.radar(0).equals("中央優先"),"mode name");
+    yes(FlightHudTheme.name(1).equals("戦術表示"),"style name");
     System.out.println("PASS Flight HUD 0.39 tests: "+tests+" assertions");
   }
 }

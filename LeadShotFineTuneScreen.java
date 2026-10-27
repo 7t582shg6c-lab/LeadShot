@@ -13,7 +13,7 @@ public final class LeadShotFineTuneScreen extends Screen {
     private EditBox field;
     private String status="";
     public LeadShotFineTuneScreen(LeadShotSettingsScreen parent,FineTuneParameter parameter){
-        super(Component.literal("LEADSHOT / PRECISION TUNE"));
+        super(Component.literal("LeadShot / 数値の詳細設定"));
         this.parent=parent;this.parameter=parameter;
     }
     @Override protected void init(){
@@ -32,7 +32,7 @@ public final class LeadShotFineTuneScreen extends Screen {
         button(left+3*(adjustWidth+gap),top+63,adjustWidth,"+"+parameter.largeStep(),()->shift(1,true));
         int actionWidth=(formWidth-gap*2)/3;
         button(left,top+100,actionWidth,"初期値",()->{field.setValue(String.valueOf(parameter.defaults()));status="";});
-        button(left+actionWidth+gap,top+100,actionWidth,"適用 / APPLY",this::apply);
+        button(left+actionWidth+gap,top+100,actionWidth,"適用",this::apply);
         button(left+2*(actionWidth+gap),top+100,actionWidth,"キャンセル",this::onClose);
     }
     private int contentTop(){return Math.max(24,Math.min(height-150,height/2-88));}
@@ -57,7 +57,7 @@ public final class LeadShotFineTuneScreen extends Screen {
         int formWidth=Math.min(304,Math.max(80,width-12));
         int left=(width-formWidth)/2;
         gfx.fill(Math.max(0,left-5),Math.max(0,top-22),Math.min(width,left+formWidth+5),Math.min(height,top+137),0xCC071825);
-        gfx.text(font,"PRECISION TUNE / "+parameter.label(),left,top-17,0xFF79E6FF,true);
+        gfx.text(font,"詳細調整 / "+parameter.label(),left,top-17,0xFF79E6FF,true);
         gfx.text(font,parameter.description(),left,top+7,0xFFE0EDF3,true);
         gfx.text(font,"設定範囲: "+parameter.show(parameter.minimum())+" 〜 "+parameter.show(parameter.maximum()),left,top+22,0xFFAAC8DA,true);
         Integer candidate=field==null?null:parameter.parse(field.getValue());

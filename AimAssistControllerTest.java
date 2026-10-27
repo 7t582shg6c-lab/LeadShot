@@ -12,7 +12,8 @@ public final class AimAssistControllerTest {
    near(diag.yaw(),1.2);near(diag.pitch(),1.6);
    var wrapped=AimAssistController.step(179,0,-179,0,1,true);
    near(wrapped.yaw(),180);near(wrapped.pitch(),0);
-   near(AimAssistController.step(0,0,100,0,4,true).yaw(),0); // no snap across huge angle
+   near(AimAssistController.step(0,0,100,0,4,true).yaw(),4); // now turns toward a wide, visible flight target
+   near(AimAssistController.step(0,0,179,0,120,true).yaw(),0); // still rejects targets behind
    near(AimAssistController.step(0,0,Double.NaN,0,4,true).yaw(),0);
    near(AimAssistController.step(0,0,5,0,0,true).yaw(),0);
    check(AimAssistController.step(0,0,0.1,0.1,3,true).aligned());

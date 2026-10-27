@@ -34,5 +34,5 @@ public final class PrecomputePolicy {
         default -> new Plan(DEFAULT,0,0);
     };}
     public static String name(int mode){return switch(mode){
-        case LOW -> "LOW";case HIGH -> "HIGH";case ALL -> "ALL";default -> "DEFAULT";};}
+        case LOW -> "省電力追跡";case HIGH -> "弾道予測";case ALL -> "全段階解析";default -> "動体予測";};}
 }

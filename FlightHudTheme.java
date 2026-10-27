@@ -14,19 +14,19 @@ public final class FlightHudTheme {
 
     public enum State { STANDBY, ACQUIRING, TRACK, READY, OBSTRUCTED }
 
-    public static String name(int style) {return style == 0 ? "CLASSIC" : "TACTICAL";}
-    public static String radar(int mode) {return mode == 0 ? "BORESIGHT" : "WIDE SCAN";}
-    public static String lock(boolean manual) {return manual ? "STT LOCK" : "AUTO TRACK";}
+    public static String name(int style) {return style == 0 ? "標準表示" : "戦術表示";}
+    public static String radar(int mode) {return mode == 0 ? "中央優先" : "広域索敵";}
+    public static String lock(boolean manual) {return manual ? "手動固定" : "自動追跡";}
     public static String computation(int mode) {
-        return switch (mode) { case 0 -> "ECO TRACK";case 1 -> "MOTION SCAN";case 2 -> "BALLISTIC SCAN";default -> "FULL ANALYSIS";};
+        return switch (mode) { case 0 -> "省電力追跡";case 1 -> "動体予測";case 2 -> "弾道予測";default -> "全段階解析";};
     }
     public static String cue(State state) {
         return switch (state) {
-            case STANDBY -> "STANDBY";
-            case ACQUIRING -> "ACQUIRING";
-            case TRACK -> "TRACKING";
-            case READY -> "FIRE CUE";
-            case OBSTRUCTED -> "OBSTRUCTED";
+            case STANDBY -> "待機中";
+            case ACQUIRING -> "索敵中";
+            case TRACK -> "追跡中";
+            case READY -> "射撃可能（推定）";
+            case OBSTRUCTED -> "射線遮蔽";
         };
     }
     public static int color(State state) {

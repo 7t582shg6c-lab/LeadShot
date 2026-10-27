@@ -15,7 +15,9 @@ public final class AimAssistController {
         }
         double dy=CoreBallistics.wrap(goalYaw-yaw);
         double dp=goalPitch-pitch;
-        if(Math.abs(dy)>65||Math.abs(dp)>50) return new Step(yaw,pitch,false,false);
+        // A visible fast-moving flight target can need a turn far beyond the old 65° cut-off.
+        // Never rotate the camera by a full half-turn for a target behind the player.
+        if(Math.abs(dy)>145||Math.abs(dp)>85) return new Step(yaw,pitch,false,false);
         double length=Math.hypot(dy,dp);
         if(length<0.00001)return new Step(yaw,pitch,false,true);
         // Vector bound (rather than per-axis bound) preserves angular speed in diagonals.

@@ -25,11 +25,11 @@ public final class ShotConfidence {
     }
     public static String japanese(Status s) {
         return switch(s) {
-            case BLOCKED -> "BLOCKED / 遮蔽あり";
-            case CONTACT_UNSUPPORTED -> "NO CONTACT / 幾何支持なし";
-            case MODEL_DISAGREEMENT -> "DISPUTED / 予測不一致";
-            case UNVERIFIED -> "UNCHECKED / 経路未確定";
-            case CONSISTENT_ESTIMATE -> "CONSISTENT / 推定一致 (命中保証なし)";
+            case BLOCKED -> "遮蔽あり";
+            case CONTACT_UNSUPPORTED -> "命中経路なし";
+            case MODEL_DISAGREEMENT -> "予測不一致";
+            case UNVERIFIED -> "経路未確定";
+            case CONSISTENT_ESTIMATE -> "推定一致（命中保証なし）";
         };
     }
 }
