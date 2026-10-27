@@ -9,7 +9,7 @@ public final class TargetVelocityFilterTest {
   ok(estimate.x()>.2&&estimate.x()<.35);
   var reverse=TargetVelocityFilter.smooth(estimate,new CoreBallistics.Vec(-.5,0,0));
   ok(reverse.x()<0);
-  var teleport=TargetVelocityFilter.smooth(estimate,new CoreBallistics.Vec(10,0,0));
+  var teleport=TargetVelocityFilter.smooth(estimate,new CoreBallistics.Vec(14,0,0));
   ok(teleport.length()==0);
   var center=new CoreBallistics.Vec(20,4,0);
   var future=TargetVelocityFilter.lead(center,positive);

@@ -2,12 +2,12 @@ from pathlib import Path
 import json
 base=Path(__file__).resolve().parent.parent
 p=(base/'gradle.properties').read_text()
-assert 'minecraft_version=26.3' in p and 'mod_version=0.42.0-alpha.1' in p
+assert 'minecraft_version=26.3' in p and 'mod_version=0.44.0-alpha.1' in p
 mod=json.loads((base/'src/main/resources/fabric.mod.json').read_text())
 assert mod['environment']=='client' and mod['depends']['java']=='>=25'
 java={x.name:x.read_text() for x in (base/'src/main/java/dev/leadshot').glob('*.java')}
 entry=java['LeadShot.java']
-for phrase in ['KeyMappingHelper.registerKeyMapping','InputConstants.Type.KEYBOARD','HudElementRegistry.attachElementBefore','getTicksUsingItem()','SHADOW.observe','ContactAudit.evaluate','FlightGuidePoints.sample','TargetStability.switchToNew','SHADOW.clear','options.write(CONFIG)','ProjectedBox.edges','BallisticOcclusion.evaluate','ClientBlockOcclusion.probe']:
+for phrase in ['KeyMappingHelper.registerKeyMapping','InputConstants.Type.KEYBOARD','HudElementRegistry.attachElementBefore','getTicksUsingItem()','SHADOW.observe','ContactAudit.evaluate','FlightGuidePoints.sample','TargetSelectionV43.preferNew','SHADOW.clear','options.write(CONFIG)','ProjectedBox.edges','BallisticOcclusion.evaluate','ClientBlockOcclusion.probe']:
     assert phrase in entry,phrase
 assert 'ProjectileContactWindow.earliest' in java['ContactAudit.java']
 for name in ['TrajectoryConsensus.java','ShotConfidence.java','ProjectedAimRings.java','ShotReleaseAudit.java','WorldGuideGeometry.java','ObservedArrowAudit.java']:
@@ -69,3 +69,17 @@ assert 'PrecomputePolicy.ACTIVE_CANDIDATES' in entry
 assert 'fullDrawCandidateCap' not in entry
 assert 'warmBudget' not in entry
 print('PASS v0.42 consistent 64-entity depth stages, current-tick revalidation and fixed candidate policy')
+
+# v0.43 client-standard rotation packet sequencing, centre acquisition, and lightweight all-contact frames.
+assert 'ServerboundMovePlayerPacket.Rot' in entry and 'mc.gameMode.releaseUsingItem(shooter)' in entry
+assert 'AIM_SYNC.ready(selected,tick)' in entry and 'AIM_SYNC.observe(selected,tick,viewSteered)' in entry
+assert 'TargetSelectionV43.score' in entry and 'TargetSelectionV43.preferNew' in entry
+assert 'drawScanContacts' in entry and 'scanContacts=List.copyOf(contacts)' in entry
+assert all(n in java for n in ['MultiplayerAimSync.java','TargetSelectionV43.java','ScanOverlayPreference.java'])
+print('PASS v0.43 multiplayer rotation order, centre targeting, and persistent contact overlay')
+assert 'mc.gameMode.useItem(shooter,InteractionHand.MAIN_HAND)' in entry
+assert 'mc.gameMode.stopDestroyBlock()' in entry
+print('PASS v0.43 standard multiplayer bow restart path')
+assert 'AssistEligibilityV43.maySteer' in entry
+assert 'chosen.collision().geometricContact()' in entry
+print('PASS v0.43 steering allowed for visible geometric contacts even if models disagree; release remains conservative')

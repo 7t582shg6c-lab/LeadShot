@@ -1,15 +1,15 @@
 {
   "key.category.leadshot.main": "LeadShot",
-  "key.leadshot.hud_visibility": "Toggle HUD",
-  "key.leadshot.preview": "Toggle bow preview",
-  "key.leadshot.cycle_target": "Cycle target category",
-  "key.leadshot.settings": "LeadShot settings",
-  "key.leadshot.hud_mode": "Change HUD mode",
-  "key.leadshot.markers": "Toggle aim guides",
-  "key.leadshot.lock_mode": "Toggle manual target lock",
-  "key.leadshot.lock_next": "Next locked target",
-  "key.leadshot.lock_clear": "Clear target lock",
-  "key.leadshot.aim_assist": "Toggle locked-target aim assist",
-  "key.leadshot.assisted_fire": "Assisted bow release (middle click)",
-  "key.leadshot.hud_style": "Cycle HUD style (Classic/Tactical)"
+  "key.leadshot.hud_visibility": "HUD表示の切替",
+  "key.leadshot.preview": "弓予測の切替",
+  "key.leadshot.cycle_target": "対象カテゴリの切替",
+  "key.leadshot.settings": "LeadShot設定画面",
+  "key.leadshot.hud_mode": "HUDモード切替",
+  "key.leadshot.markers": "照準ガイド切替",
+  "key.leadshot.lock_mode": "手動ロックON/OFF",
+  "key.leadshot.lock_next": "次の照準対象",
+  "key.leadshot.lock_clear": "ロック解除",
+  "key.leadshot.aim_assist": "自動照準補助の切替",
+  "key.leadshot.assisted_fire": "連続発射補助（右＋左クリック長押し）",
+  "key.leadshot.hud_style": "HUD外観の切替（標準／戦術）"
 }

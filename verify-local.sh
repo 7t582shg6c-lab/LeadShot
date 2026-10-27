@@ -97,3 +97,24 @@ javac --release 21 -encoding UTF-8 -d "$TMP" \
 for test in TrackingBudgetTest BallisticCoefficientV41Test HudDensityV41Test HudTextFitV41Test; do
   java -cp "$TMP" "dev.leadshot.$test"
 done
+
+# v0.43 steering latency guard, acquisition priority and persistent contact overlay
+javac --release 21 -encoding UTF-8 -d "$TMP" \
+ src/main/java/dev/leadshot/{CoreBallistics,TargetStability,TargetSelectionV43,MultiplayerAimSync,ScanOverlayPreference}.java \
+ tools/{TargetSelectionV43Test,MultiplayerAimSyncTest,ScanOverlayPreferenceTest}.java
+for test in TargetSelectionV43Test MultiplayerAimSyncTest ScanOverlayPreferenceTest; do
+  java -cp "$TMP" "dev.leadshot.$test"
+done
+
+# v0.43 safe separation of visual steering from strict release qualification.
+javac --release 21 -encoding UTF-8 -d "$TMP" \
+ src/main/java/dev/leadshot/AssistEligibilityV43.java tools/AssistEligibilityV43Test.java
+java -cp "$TMP" dev.leadshot.AssistEligibilityV43Test
+
+# v0.44 gliding-target sub-tick ballistics, high-speed motion and optional PvP settings.
+javac --release 21 -encoding UTF-8 -d "$TMP" \
+ src/main/java/dev/leadshot/{CoreBallistics,AimAssistController,TargetVelocityFilter,FlightTargetPredictor,AdvancedAimOptions}.java \
+ tools/{FlightPrecisionV44Test,FlightTargetPredictorTest,AdvancedAimOptionsV44Test}.java
+for test in FlightPrecisionV44Test FlightTargetPredictorTest AdvancedAimOptionsV44Test; do
+    java -cp "$TMP" "dev.leadshot.$test"
+done

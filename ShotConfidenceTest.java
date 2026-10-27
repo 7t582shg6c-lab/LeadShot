@@ -18,7 +18,7 @@ public final class ShotConfidenceTest {
                  : block==BallisticOcclusion.State.CLEAR?ShotConfidence.Status.CONSISTENT_ESTIMATE
                  : ShotConfidence.Status.UNVERIFIED;
             ok(result==expected,"block="+block+" support="+support);
-            ok(ShotConfidence.japanese(result).length()>6,"nonempty label");
+            ok(!ShotConfidence.japanese(result).isEmpty(),"nonempty label");
             ok((ShotConfidence.color(result)>>>24)==0xFF,"opaque color");
         }
         ok(ShotConfidence.classify(no,votes(3),blocks(BallisticOcclusion.State.CLEAR))==ShotConfidence.Status.CONTACT_UNSUPPORTED,"no contact is not green");

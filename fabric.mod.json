@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "leadshot",
   "version": "${version}",
-  "name": "LeadShot // FCS-42 Depth Processor",
-  "description": "Client-only bow guidance, FCS tactical HUD, radar, full-draw ballistic prediction, precision numeric tuning, 64-entity precompute depth modes, robust target lock selection, and optional assisted fire.",
+  "name": "LeadShot / 日本語火器管制支援",
+  "description": "弓の偏差照準・動体追跡・戦術HUD・64体の事前計算・索敵枠・高速飛行への照準補正・補助発射に対応するクライアントMOD。",
   "authors": [
     "LeadShot project"
   ],
