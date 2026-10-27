@@ -575,10 +575,19 @@ public final class LeadShot implements ClientModInitializer {
         // planner never fires by itself and never weakens any legacy release gate.
         boolean interceptIntent=mc.gui.screen()==null && mc.options.keyAttack.isDown()
                 && mc.options.keyUse.isDown() && bow && shooter.getTicksUsingItem()>=23;
+        // Four-theater release-window profile (G2G, G2A, A2G, A2A).
+        // This only restricts speculative waiting; it never authorizes fire.
+        boolean shooterAirborne=shooter.isFallFlying()
+                || (!shooter.onGround() && shootVelocity.length()>.65);
+        boolean targetAirborne=chosen.entity().isFallFlying() || !chosen.entity().onGround();
+        EngagementProfileV511.Policy engagement=EngagementProfileV511.assess(
+                shooterAirborne,targetAirborne,shootVelocity,chosen.velocity(),
+                chosen.half(),chosen.shot().ticks(),adaptiveTargetPath!=null);
         InterceptWindowV51.Decision interceptWindow=InterceptWindowV51.INSTANCE.decide(
-                selected,tick,interceptIntent,readyState.ready(),shooter.isFallFlying(),
+                selected,tick,interceptIntent,readyState.ready(),shooterAirborne,
                 shooter.getYRot(),shooter.getXRot(),launchOrigin,shootVelocity,
-                chosen.shot(),chosen.center(),chosen.velocity(),chosen.half(),adaptiveTargetPath);
+                chosen.shot(),chosen.center(),chosen.velocity(),chosen.half(),
+                adaptiveTargetPath,engagement);
         if(RELEASE_GATE.allow(tick,guideOptions.assistedFire(),
                 mc.gui.screen()==null && mc.options.keyAttack.isDown() && mc.options.keyUse.isDown(),
                 bow,shooter.getTicksUsingItem()>=20,(chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),

@@ -25,6 +25,7 @@ public final class InterceptWindowV51 {
     private boolean enabled;
     private int maxHoldTicks=2;
     private UUID armedTarget;
+    private EngagementProfileV511.Theater armedTheater;
     private long firstArmedTick=Long.MIN_VALUE, previousTick=Long.MIN_VALUE;
     private long holds, windows, bypasses;
 
@@ -45,7 +46,7 @@ public final class InterceptWindowV51 {
             maxHoldTicks=Math.max(0,Math.min(3,Integer.parseInt(p.getProperty("maxHoldTicks","2"))));
         }catch(Exception ignored){enabled=false;maxHoldTicks=2;}
     }
-    public synchronized void reset(){armedTarget=null;firstArmedTick=previousTick=Long.MIN_VALUE;}
+    public synchronized void reset(){armedTarget=null;armedTheater=null;firstArmedTick=previousTick=Long.MIN_VALUE;}
     public synchronized long holds(){return holds;}
     public synchronized long opportunities(){return windows;}
     public synchronized long bypasses(){return bypasses;}
@@ -63,7 +64,28 @@ public final class InterceptWindowV51 {
             CoreBallistics.Solution presentShot,CoreBallistics.Vec targetCenter,
             CoreBallistics.Vec targetVelocity,CoreBallistics.Vec halfBox,
             List<CoreBallistics.Vec> curvedPath){
+        return decide(target,tick,heldIntent,currentReady,gliding,cameraYaw,cameraPitch,
+                origin,inheritedVelocity,presentShot,targetCenter,targetVelocity,halfBox,
+                curvedPath,null);
+    }
+
+    /**
+     * Four-theater overload. The policy only reduces speculative waits or
+     * increases the required expected gain. The old API is retained for
+     * compatibility with callers that do not have theater classification.
+     */
+    public synchronized Decision decide(UUID target,long tick,boolean heldIntent,
+            boolean currentReady,boolean gliding,
+            double cameraYaw,double cameraPitch,
+            CoreBallistics.Vec origin,CoreBallistics.Vec inheritedVelocity,
+            CoreBallistics.Solution presentShot,CoreBallistics.Vec targetCenter,
+            CoreBallistics.Vec targetVelocity,CoreBallistics.Vec halfBox,
+            List<CoreBallistics.Vec> curvedPath,
+            EngagementProfileV511.Policy policy){
         if(!enabled||maxHoldTicks==0){reset();return pass("disabled");}
+        if(policy!=null && !policy.allowsWaiting()){
+            reset();bypasses++;return pass("theater:"+policy.theater()+":"+policy.reason());
+        }
         if(!heldIntent||!currentReady){reset();return pass("not-armed-or-ready");}
         if(target==null||tick<0||origin==null||inheritedVelocity==null||presentShot==null
                 ||targetCenter==null||targetVelocity==null||halfBox==null
@@ -79,13 +101,17 @@ public final class InterceptWindowV51 {
         // across several ticks of extremely fast gliding or rocket boosts.
         double speed=inheritedVelocity.length();
         if(!Double.isFinite(speed)||speed>3.0){reset();bypasses++;return pass("unknown-shooter-path");}
+        EngagementProfileV511.Theater currentTheater=policy==null?null:policy.theater();
         if(armedTarget==null||!target.equals(armedTarget)||tick<=previousTick
-                ||previousTick!=Long.MIN_VALUE&&tick-previousTick>1){
-            armedTarget=target;firstArmedTick=tick;
+                ||previousTick!=Long.MIN_VALUE&&tick-previousTick>1
+                || armedTheater!=currentTheater){
+            armedTarget=target;firstArmedTick=tick;armedTheater=currentTheater;
         }
         previousTick=tick;
-        if(tick-firstArmedTick>=maxHoldTicks){windows++;return pass("maximum-wait-reached");}
-        int maxDelay=Math.min(maxHoldTicks,gliding?1:3);
+        int theaterCap=policy==null?maxHoldTicks:policy.maximumWaitTicks();
+        int allowedWait=Math.min(maxHoldTicks,theaterCap);
+        if(tick-firstArmedTick>=allowedWait){windows++;return pass("maximum-wait-reached");}
+        int maxDelay=Math.min(allowedWait,gliding?1:3);
         int minPathLength=Math.min(CoreBallistics.MAX_TICKS,maxDelay+presentShot.ticks()+4);
         List<CoreBallistics.Vec> path=path(curvedPath,targetCenter,targetVelocity,minPathLength);
         if(path==null){bypasses++;return pass("missing-target-path");}
@@ -120,7 +146,9 @@ public final class InterceptWindowV51 {
             if(Double.isFinite(score)&&(best==null||score<best.score()))
                 best=new Candidate(delay,score,checks);
         }
-        if(best==null||immediate-best.score()<MIN_GAIN_DEGREES){
+        double requiredGain=policy==null?MIN_GAIN_DEGREES:
+                Math.max(MIN_GAIN_DEGREES,policy.minimumGainDegrees());
+        if(best==null||immediate-best.score()<requiredGain){
             windows++;return new Decision(true,0,checks,immediate,
                     best==null?Double.NaN:best.score(),"current-window-preferred");
         }
