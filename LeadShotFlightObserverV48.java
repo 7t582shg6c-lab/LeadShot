@@ -55,6 +55,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
         tick++;
         if(lastWorld!=mc.level){
             lastWorld=mc.level;measurements.clear();glideCalibration.reset();
+            GlideSteeringV50.INSTANCE.clearMeasuredConfidence();
             AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);
             observedWorld=mc.level;
         }
@@ -67,8 +68,17 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
                     new CoreBallistics.Vec(p.x,p.y,p.z),
                     new CoreBallistics.Vec(v.x,v.y,v.z),pilot.getYRot(),pilot.getXRot(),
                     pilot.isFallFlying(),pilot.horizontalCollision));
-            if(tick%glideCalibration.logInterval()==0)
-                System.out.println(glideCalibration.report());
+            GlideSteeringV50.INSTANCE.acceptMeasuredConfidence(
+                    glideCalibration.recentFive(tick),tick);
+            if(tick%glideCalibration.logInterval()==0){
+                var confidence=GlideSteeringV50.INSTANCE.measuredConfidence();
+                System.out.println(glideCalibration.report()
+                        +" | v0.50.2 recent5="+confidence.state()
+                        +" n="+confidence.samples()
+                        +" modelRMS="+String.format(Locale.ROOT,"%.3f",confidence.modelRms())
+                        +" CV-RMS="+String.format(Locale.ROOT,"%.3f",confidence.baselineRms())
+                        +" guard="+GlideSteeringV50.INSTANCE.measuredGuardEnabled());
+            }
         }
         if(!enabled || mc.level==null || mc.player==null)return;
         var shooter=mc.player;

@@ -13,14 +13,31 @@ public final class GlideSteeringV50 {
     public record Decision(double yaw,double pitch,boolean active,boolean limited,
             boolean fireStable,double displacementDelta,String reason) {}
     private boolean enabled;
+    private boolean useMeasuredConfidence;
+    private GlideReliabilityV502.Assessment measured=GlideReliabilityV502.missing();
+    private long confidenceTick=Long.MIN_VALUE;
+    public synchronized boolean measuredGuardEnabled(){return useMeasuredConfidence;}
+    public synchronized void setMeasuredGuardEnabled(boolean value){useMeasuredConfidence=value;}
+    public synchronized void clearMeasuredConfidence(){
+        measured=GlideReliabilityV502.missing();confidenceTick=Long.MIN_VALUE;
+    }
+    /** Called from the independent observer, not by target selection or firing. */
+    public synchronized void acceptMeasuredConfidence(GlideCalibrationV501.RecentFive recent,long now){
+        if(recent==null||now<0||now<confidenceTick)return;
+        measured=GlideReliabilityV502.evaluate(recent,now);
+        confidenceTick=now;
+    }
+    public synchronized GlideReliabilityV502.Assessment measuredConfidence(){return measured;}
+
     public synchronized boolean enabled(){return enabled;}
     public synchronized void setEnabled(boolean value){enabled=value;}
     public synchronized void readConfiguration(Path file){
-        enabled=false;
+        enabled=false;useMeasuredConfidence=false;clearMeasuredConfidence();
         if(file==null||!Files.isRegularFile(file))return;
         try(InputStream in=Files.newInputStream(file)){
             var props=new Properties();props.load(in);
             enabled=Boolean.parseBoolean(props.getProperty("enabled","false"));
+            useMeasuredConfidence=Boolean.parseBoolean(props.getProperty("useMeasuredConfidence","false"));
         }catch(Exception ignored){enabled=false;}
     }
     /**
@@ -42,8 +59,14 @@ public final class GlideSteeringV50 {
         if(!Double.isFinite(speed)||speed>12)
             return new Decision(yaw,pitch,true,true,false,Double.NaN,"unmodelled-velocity");
         // Strict bounds on ONE game-tick's automatic camera movement.
-        double yawLimit=Math.max(1.25,5.0/(1.0+speed*.28));
-        double pitchLimit=Math.max(.85,2.8/(1.0+speed*.22));
+        // Opt-in, evidence-based protective degradation. The unavailable and
+        // stale cases preserve the old v0.50 behavior to avoid blocking normal
+        // gliding indefinitely when the player turns frequently.
+        boolean poorEvidence=useMeasuredConfidence
+                && measured.state()==GlideReliabilityV502.State.POOR_FIT;
+        double evidenceGain=poorEvidence ? .55 : 1.0;
+        double yawLimit=Math.max(1.25,5.0/(1.0+speed*.28))*evidenceGain;
+        double pitchLimit=Math.max(.85,2.8/(1.0+speed*.22))*evidenceGain;
         double dy=CoreBallistics.wrap(requestedYaw-yaw);
         double dp=requestedPitch-pitch;
         double nextYaw=yaw+clamp(dy,-yawLimit,yawLimit);
@@ -58,7 +81,7 @@ public final class GlideSteeringV50 {
         double drift=candidate.position().minus(baseline.position()).length();
         // Approximate 5-tick delta against continuing the CURRENT view direction.
         // Nonlinear model is only a steering guard; it is NOT flight autopilot.
-        final double driftLimit=.95;
+        final double driftLimit=poorEvidence?.45:.95;
         if(drift>driftLimit){
             // Monotonic local search for a smaller change. The short-horizon
             // movement model is approximate; limit rather than extrapolate.
@@ -77,9 +100,9 @@ public final class GlideSteeringV50 {
         // uncertain. This does not inspect terrain; it prevents automatic fire.
         boolean unstable=(nextPitch>54 && speed>1.3) || velocity.y() < -2.8
                 || drift>driftLimit+.00001;
-        boolean settled=!limited && !unstable;
+        boolean settled=!limited && !unstable && !poorEvidence;
         return new Decision(CoreBallistics.wrap(nextYaw),nextPitch,true,limited,settled,
-                drift,unstable?"flight-unstable":limited?"rate-or-drift-limit":"stable");
+                drift,poorEvidence?"measured-poor-fit":unstable?"flight-unstable":limited?"rate-or-drift-limit":"stable");
     }
     private static double clamp(double a,double lo,double hi){return Math.max(lo,Math.min(hi,a));}
 }

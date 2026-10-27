@@ -20,6 +20,14 @@ public final class GlideCalibrationV501 {
     private static final double CAMERA_TOLERANCE_DEGREES=.65;
     private static final double VELOCITY_IMPULSE_LIMIT=.38;
     private static final int MAX_PENDING=18;
+    // Recent, eligible walk-forward errors only. A fixed-size / fixed-age
+    // window prevents obsolete flights from masquerading as current evidence.
+    private static final int MAX_RECENT_FIVE=64;
+    private static final long RECENT_MAX_AGE=180;
+    private record RecentError(long dueTick,double modelSquared,double linearSquared) {}
+    public record RecentFive(long newestTick,int evaluations,double modelPositionRms,
+                             double baselinePositionRms,long latestEvaluatedTick) {}
+
     public record Sample(long tick,CoreBallistics.Vec position,CoreBallistics.Vec velocity,
                          double yaw,double pitch,boolean gliding,boolean collision){
         public boolean finite(){return tick>=0 && position!=null&&position.finite()
@@ -47,6 +55,7 @@ public final class GlideCalibrationV501 {
         }
     }
     private final Deque<Pending> pending=new ArrayDeque<>();
+    private final Deque<RecentError> recentFive=new ArrayDeque<>();
     private final long[] count=new long[3];
     private final double[] modelSq=new double[3],baselineSq=new double[3],velocitySq=new double[3],maxErr=new double[3];
     private Sample previous;
@@ -68,7 +77,7 @@ public final class GlideCalibrationV501 {
     public int logInterval(){return logInterval;}
     /** New world identity or disconnect: NEVER compare across worlds. */
     public void reset(){
-        pending.clear();previous=null;observations=turning=impulses=gaps=inactive=invalid=0;
+        pending.clear();recentFive.clear();previous=null;observations=turning=impulses=gaps=inactive=invalid=0;
         java.util.Arrays.fill(count,0);java.util.Arrays.fill(modelSq,0);
         java.util.Arrays.fill(baselineSq,0);java.util.Arrays.fill(velocitySq,0);
         java.util.Arrays.fill(maxErr,0);
@@ -77,15 +86,16 @@ public final class GlideCalibrationV501 {
     public void sample(Sample sample){
         if(!enabled)return;
         if(sample==null||!sample.finite()){
-            invalid++;pending.clear();previous=null;return;
+            invalid++;pending.clear();recentFive.clear();previous=null;return;
         }
         if(previous!=null&&sample.tick()<=previous.tick())return; // Duplicate or stale sample
         if(previous!=null&&sample.tick()!=previous.tick()+1){
-            gaps++;pending.clear();
+            gaps++;pending.clear();recentFive.clear();
         }
         observations++;
+        pruneRecent(sample.tick());
         if(!sample.gliding()||sample.collision()){
-            inactive++;pending.clear();previous=sample;return;
+            inactive++;pending.clear();recentFive.clear();previous=sample;return;
         }
         if(previous==null||!previous.gliding()||previous.collision()){
             pending.clear();previous=sample;enqueue(sample);return;
@@ -94,6 +104,7 @@ public final class GlideCalibrationV501 {
         // Reject impulses unlike the v0.50 passive gliding recurrence; the
         // current client API does not tell us which impulse was a rocket.
         boolean impulse=change>VELOCITY_IMPULSE_LIMIT;
+        if(impulse) recentFive.clear();
         for(Pending p:pending){
             if(Math.abs(CoreBallistics.wrap(sample.yaw()-p.referenceYaw))>CAMERA_TOLERANCE_DEGREES
                     ||Math.abs(sample.pitch()-p.referencePitch)>CAMERA_TOLERANCE_DEGREES)p.turning=true;
@@ -121,6 +132,11 @@ public final class GlideCalibrationV501 {
             baselineSq[p.index]+=baselineError*baselineError;
             velocitySq[p.index]+=motionError*motionError;
             maxErr[p.index]=Math.max(maxErr[p.index],modelError);
+            if(p.index==2){
+                recentFive.addLast(new RecentError(sample.tick(),modelError*modelError,
+                        baselineError*baselineError));
+                pruneRecent(sample.tick());
+            }
         }
         previous=sample;
         enqueue(sample);
@@ -135,6 +151,24 @@ public final class GlideCalibrationV501 {
                     sample.position().add(sample.velocity().times(horizon)),sample.yaw(),sample.pitch()));
         }
         while(pending.size()>MAX_PENDING)pending.removeFirst();
+    }
+    private void pruneRecent(long nowTick){
+        while(!recentFive.isEmpty() && (recentFive.size()>MAX_RECENT_FIVE ||
+                nowTick-recentFive.peekFirst().dueTick()>RECENT_MAX_AGE))
+            recentFive.removeFirst();
+    }
+    /** 5-tick held-out history without older or invalid flight segments.
+     * Pure diagnostic; a result here cannot authorize a shot.
+     */
+    public RecentFive recentFive(long nowTick){
+        if(nowTick<0)return new RecentFive(nowTick,0,Double.NaN,Double.NaN,Long.MIN_VALUE);
+        int n=0;double model=0,linear=0;long last=Long.MIN_VALUE;
+        for(RecentError item:recentFive){
+            if(item.dueTick()>nowTick || nowTick-item.dueTick()>RECENT_MAX_AGE)continue;
+            n++;model+=item.modelSquared();linear+=item.linearSquared();last=item.dueTick();
+        }
+        return new RecentFive(nowTick,n,n==0?Double.NaN:Math.sqrt(model/n),
+                n==0?Double.NaN:Math.sqrt(linear/n),last);
     }
     public Summary summary(){
         HorizonStats[] stats=new HorizonStats[3];
