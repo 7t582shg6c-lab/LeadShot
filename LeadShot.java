@@ -118,6 +118,8 @@ public final class LeadShot implements ClientModInitializer {
         try{guideOptions=GuideControls.read(GUIDE_CONFIG);}catch(Exception e){System.err.println("[LeadShot] guide config: "+e);}
         overlayMode=ScanOverlayPreference.read(OVERLAY_CONFIG);
         advancedAim=AdvancedAimOptions.read(ADVANCED_CONFIG);
+        AdaptiveLeadV49.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
+                .resolve("leadshot-adaptive-v049.properties"));
         for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
@@ -127,7 +129,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
+        if(mc.level!=lastLevel){AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
@@ -204,6 +206,8 @@ public final class LeadShot implements ClientModInitializer {
             }
         }
         SharedObservationV484.INSTANCE.publish(mc.level,tick,sharedSamples);
+        AdaptiveLeadV49.INSTANCE.acceptFrame(mc.level,
+                SharedObservationV484.INSTANCE.latest(mc.level,tick,0));
         observations.entrySet().removeIf(e->tick-e.getValue().tick()>25);
         // Purge entity caches on death/despawn/category change; never reuse UUID stale data.
         WARM.retain(speeds.keySet());
@@ -405,15 +409,54 @@ public final class LeadShot implements ClientModInitializer {
         // ALWAYS recompute the selected trajectory from CURRENT observation before
         // contact tests, guidance, READY, steering or assisted fire. Cached hints
         // must never authorize a shot or display falsely fresh contact geometry.
-        CoreBallistics.Solution preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),chosen.velocity(),
+        // Opt-in high-mobility lead. The bounded correction defaults to CV and
+        // never overrides the existing READY, LOS, or release gates.
+        // Freeze the pre-adaptation horizon and velocity. The curved target
+        // contact test must use the SAME baseline as the inverse solver.
+        int adaptiveHorizon=chosen.shot().ticks();
+        CoreBallistics.Vec legacyVelocity=chosen.velocity();
+        AdaptiveLeadV49.Adjustment adaptiveLead=AdaptiveLeadV49.INSTANCE.adjust(selected,tick,
+                adaptiveHorizon,vec(chosen.entity().getBoundingBox().getCenter()),
+                legacyVelocity,chosen.half());
+        boolean adaptiveUsed=adaptiveLead.applied();
+        CoreBallistics.Vec adaptedVelocity=adaptiveLead.velocity();
+        CoreBallistics.Solution preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),adaptedVelocity,
                 shootVelocity,CoreBallistics.FULL_BOW_SPEED);
+        // A trained motion forecast may still produce an impossible bow arc.
+        // Revert the same shot to the original CV/legacy solution in that case.
+        if(adaptiveUsed && (preciseShot==null ||
+                preciseShot.speedMismatch()>Math.max(.18,speed*.10))){
+            adaptiveUsed=false;
+            adaptedVelocity=legacyVelocity;
+            preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),adaptedVelocity,
+                    shootVelocity,CoreBallistics.FULL_BOW_SPEED);
+        }
         if(preciseShot==null || preciseShot.speedMismatch()>Math.max(.18,speed*.10)){
             radarMark=null;
             SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;
         }
+        // v0.49.2: bounded yaw/pitch rescue only for a trained curved path.
+        // The optimizer requires both curve and legacy geometric contact;
+        // missing/invalid paths cannot authorize shooting.
+        java.util.List<CoreBallistics.Vec> adaptiveTargetPath=null;
+        if(adaptiveUsed){
+            adaptiveTargetPath=AdaptiveLeadV49.INSTANCE.curvedPath(selected,tick,adaptiveHorizon,
+                    Math.min(CoreBallistics.MAX_TICKS,Math.max(1,preciseShot.ticks()+3)),
+                    chosen.center(),legacyVelocity,adaptiveLead);
+            if(adaptiveTargetPath!=null){
+                var angleSearch=CurvedAimOptimizerV492.optimize(launchOrigin,preciseShot,
+                        shootVelocity,chosen.center(),adaptedVelocity,chosen.half(),
+                        adaptiveTargetPath,CoreBallistics.FULL_BOW_SPEED,.12);
+                if(angleSearch.optimized())preciseShot=angleSearch.shot();
+            }
+        }
         ContactAudit.Result preciseContact=ContactAudit.evaluate(launchOrigin,preciseShot,chosen.center(),
-                chosen.velocity(),chosen.half(),shootVelocity,speed,Math.max(.18,speed*.10));
-        chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),chosen.velocity(),
+                adaptedVelocity,chosen.half(),shootVelocity,speed,Math.max(.18,speed*.10));
+        // Keep steering eligibility on the legacy geometric result even
+        // when the optional curved model denies READY and automatic release.
+        boolean steeringGeometry=preciseContact.geometricContact();
+        double steeringContactTick=preciseContact.contactTick();
+        chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),adaptedVelocity,
                 chosen.half(),preciseContact,chosen.score());
         // Vanilla launches the bow at EXACT full-charge speed. The inverse solver
         // returns a REQUIRED speed which may differ. All downstream simulation
@@ -424,14 +467,28 @@ public final class LeadShot implements ClientModInitializer {
             SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
             return;
         }
+        // v0.49.1 experimental curved target-path audit. The legacy hit must
+        // ALSO succeed; a curve-only apparent hit never enables fire. Replacing
+        // the contact here propagates to the existing LOS, READY and fire gates.
+        // A missing/stale/invalid path intentionally denies assisted firing.
+        if(adaptiveUsed){
+            var path=adaptiveTargetPath;
+            var curve=CurvedContactV491.evaluate(launchOrigin,actualArrow,path,
+                    chosen.half(),.12);
+            preciseContact=preciseContact.geometricContact() && curve.hit()
+                    ? new ContactAudit.Result(ContactAudit.State.PLAUSIBLE,curve.contactTick())
+                    : new ContactAudit.Result(ContactAudit.State.UNSUPPORTED,Double.NaN);
+            chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),
+                    adaptedVelocity,chosen.half(),preciseContact,chosen.score());
+        }
         WARM.store(selected,tick,launchOrigin,chosen.center(),chosen.velocity(),shootVelocity,preciseShot);
         radarMark=new RadarMark(selected,chosen.center(),chosen.entity().getName().getString(),locked);
         // Ray-test only the ONE selected solution, not every candidate. A geometric
         // contact is necessary but never sufficient for an actual successful hit.
-        BallisticOcclusion.Result obstruction = options.blockCheck() && chosen.collision().geometricContact()
+        BallisticOcclusion.Result obstruction = options.blockCheck() && steeringGeometry
                 ? BallisticOcclusion.evaluate(launchOrigin,
                         actualArrow,
-                        chosen.collision().contactTick(),
+                        steeringContactTick,
                         ClientBlockOcclusion.probe(mc.level, shooter))
                 : new BallisticOcclusion.Result(BallisticOcclusion.State.UNCHECKED,0,0,Double.NaN);
         // Only evaluate the selected candidate to keep CPU cost bounded.
@@ -462,7 +519,7 @@ public final class LeadShot implements ClientModInitializer {
         // three-model support. Otherwise it may never move for multiplayer mobs.
         // READY and firing stay strict; this relaxes only steering eligibility.
         if(!playerRetargeting && AssistEligibilityV43.maySteer(guideOptions.autoAim(),
-                (chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),chosen.collision().geometricContact(),
+                (chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),steeringGeometry,
                 clearRoute,guideOptions.lineOfSightOnly(),mc.gui.screen()==null)){
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
                     chosen.shot().yaw(),chosen.shot().pitch(),guideOptions.aimRateTenths()/10.0,true);

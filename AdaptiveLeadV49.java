@@ -95,6 +95,52 @@ public final class AdaptiveLeadV49 {
         applied++;
         return new Adjustment(effective,true,"applied",prediction.model(),shift);
     }
+    /** Builds an immutable per-tick center path for the selected target, in the
+     * SAME coordinate frame as the legacy center and CV velocity. At the lead
+     * horizon the nonlinear offset matches the correction used in solveRefined;
+     * intermediate points retain the model's original curvature. This is not
+     * a prediction of Minecraft server packets or a claim of hit probability.
+     * Null means NO audit can be trusted (fail closed, never authorize fire).
+     */
+    public synchronized java.util.List<CoreBallistics.Vec> curvedPath(UUID id,long nowTick,
+            int leadHorizon,int traceTicks,CoreBallistics.Vec legacyCenter,
+            CoreBallistics.Vec legacyVelocity,Adjustment adjustment){
+        if(!enabled||id==null||adjustment==null||!adjustment.applied()
+                ||legacyCenter==null||legacyVelocity==null||!legacyCenter.finite()
+                ||!legacyVelocity.finite()||leadHorizon<4||leadHorizon>20
+                ||traceTicks<1||traceTicks>CoreBallistics.MAX_TICKS)return null;
+        TimedObservationV48 observation=tracks.observation(id);
+        if(observation==null||observation.sampledClientTick()!=nowTick
+                ||observation.worldEpoch()!=epoch)return null;
+        var model=adjustment.model();
+        if(model==null||model==MotionForecastV481.Model.CONSTANT_VELOCITY)return null;
+        MotionForecastV481.Estimate selectedAt=tracks.forecast(id,leadHorizon,model);
+        MotionForecastV481.Estimate linearAt=tracks.forecast(id,leadHorizon,
+                MotionForecastV481.Model.CONSTANT_VELOCITY);
+        if(selectedAt==null||linearAt==null)return null;
+        CoreBallistics.Vec modelLead=selectedAt.center().minus(linearAt.center());
+        double displacement=modelLead.length();
+        if(!Double.isFinite(displacement)||displacement<.1)return null;
+        // The v0.49 lead limiter uses correctionBlocks / model displacement.
+        // Reproduce exactly the correction that was used to aim this shot.
+        double gain=adjustment.correctionBlocks()/displacement;
+        if(!Double.isFinite(gain)||gain<0||gain>1.01)return null;
+        var points=new java.util.ArrayList<CoreBallistics.Vec>(traceTicks+1);
+        for(int t=0;t<=traceTicks;t++){
+            var predicted=tracks.forecast(id,t,model);
+            var constant=tracks.forecast(id,t,MotionForecastV481.Model.CONSTANT_VELOCITY);
+            if(predicted==null||constant==null)return null;
+            CoreBallistics.Vec offset=predicted.center().minus(constant.center()).times(gain);
+            double distance=offset.length();
+            // Limit extrapolation past the chosen lead horizon as well.
+            if(distance>1.6)offset=offset.times(1.6/distance);
+            CoreBallistics.Vec center=legacyCenter.add(legacyVelocity.times(t)).add(offset);
+            if(!center.finite())return null;
+            points.add(center);
+        }
+        return java.util.List.copyOf(points);
+    }
+
     private Adjustment fallback(CoreBallistics.Vec old,String reason){
         deferred++;
         return new Adjustment(old,false,reason,
