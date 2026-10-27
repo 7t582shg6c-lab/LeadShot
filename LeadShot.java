@@ -122,6 +122,8 @@ public final class LeadShot implements ClientModInitializer {
                 .resolve("leadshot-adaptive-v049.properties"));
         GlideSteeringV50.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
                 .resolve("leadshot-glide-v050.properties"));
+        InterceptWindowV51.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
+                .resolve("leadshot-intercept-v051.properties"));
         for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
@@ -131,7 +133,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
+        if(mc.level!=lastLevel){InterceptWindowV51.INSTANCE.reset();AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
@@ -443,7 +445,8 @@ public final class LeadShot implements ClientModInitializer {
         java.util.List<CoreBallistics.Vec> adaptiveTargetPath=null;
         if(adaptiveUsed){
             adaptiveTargetPath=AdaptiveLeadV49.INSTANCE.curvedPath(selected,tick,adaptiveHorizon,
-                    Math.min(CoreBallistics.MAX_TICKS,Math.max(1,preciseShot.ticks()+3)),
+                    Math.min(CoreBallistics.MAX_TICKS,Math.max(1,preciseShot.ticks()+
+                            (InterceptWindowV51.INSTANCE.enabled()?7:3))),
                     chosen.center(),legacyVelocity,adaptiveLead);
             if(adaptiveTargetPath!=null){
                 var angleSearch=CurvedAimOptimizerV492.optimize(launchOrigin,preciseShot,
@@ -568,12 +571,21 @@ public final class LeadShot implements ClientModInitializer {
         // forced shot: every draw cycle must reach full power AND READY again.
         // Vanilla should restart using the bow while USE stays held; this
         // behavior still requires a real 26.3 in-game test.
+        // Only an actively held, charged and READY shot can be delayed. The
+        // planner never fires by itself and never weakens any legacy release gate.
+        boolean interceptIntent=mc.gui.screen()==null && mc.options.keyAttack.isDown()
+                && mc.options.keyUse.isDown() && bow && shooter.getTicksUsingItem()>=23;
+        InterceptWindowV51.Decision interceptWindow=InterceptWindowV51.INSTANCE.decide(
+                selected,tick,interceptIntent,readyState.ready(),shooter.isFallFlying(),
+                shooter.getYRot(),shooter.getXRot(),launchOrigin,shootVelocity,
+                chosen.shot(),chosen.center(),chosen.velocity(),chosen.half(),adaptiveTargetPath);
         if(RELEASE_GATE.allow(tick,guideOptions.assistedFire(),
                 mc.gui.screen()==null && mc.options.keyAttack.isDown() && mc.options.keyUse.isDown(),
                 bow,shooter.getTicksUsingItem()>=20,(chosen.entity() instanceof Enemy || (chosen.entity() instanceof Player && advancedAim.allowPlayerAutomation())),
                 clearRoute && status==ShotConfidence.Status.CONSISTENT_ESTIMATE
                         && guideOptions.lineOfSightOnly() && AIM_SYNC.ready(selected,tick),
-                readyState.ready() && !playerRetargeting && shooter.getTicksUsingItem()>=23) && mc.gameMode!=null){
+                readyState.ready() && !playerRetargeting && shooter.getTicksUsingItem()>=23
+                        && interceptWindow.permitExistingReleaseGate()) && mc.gameMode!=null){
             // Packet order matters on dedicated servers: RELEASE_USE_ITEM does not
             // contain the camera direction. Use an ordinary vanilla rotation update
             // before the ordinary release action, never invent projectile hits.
