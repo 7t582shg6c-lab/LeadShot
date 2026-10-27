@@ -2,12 +2,18 @@
   "schemaVersion": 1,
   "id": "leadshot",
   "version": "${version}",
-  "name": "LeadShot 26.3 integrated alpha (arrow-flight audit and 3-model consistency)",
-  "description": "Client-side experimental bow ballistic HUD, mob tracking, moving-AABB geometry and shadow model diagnostics.",
-  "authors": ["LeadShot project"],
+  "name": "LeadShot 26.3 alpha (smooth ballistic HUD and opt-in locked-target assist)",
+  "description": "Client-side experimental bow ballistic HUD, visibility-aware lock selection, bounded aim assist and click-gated release.",
+  "authors": [
+    "LeadShot project"
+  ],
   "license": "MIT",
   "environment": "client",
-  "entrypoints": {"client": ["dev.leadshot.LeadShot"]},
+  "entrypoints": {
+    "client": [
+      "dev.leadshot.LeadShot"
+    ]
+  },
   "depends": {
     "fabricloader": ">=0.20.1",
     "minecraft": "~26.3",

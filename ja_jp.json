@@ -5,5 +5,10 @@
   "key.leadshot.cycle_target": "対象カテゴリの切替",
   "key.leadshot.settings": "LeadShot設定画面",
   "key.leadshot.hud_mode": "HUDモード切替",
-  "key.leadshot.markers": "照準ガイド切替"
+  "key.leadshot.markers": "照準ガイド切替",
+  "key.leadshot.lock_mode": "手動ロックON/OFF",
+  "key.leadshot.lock_next": "次の照準対象",
+  "key.leadshot.lock_clear": "ロック解除",
+  "key.leadshot.aim_assist": "ロック中の自動照準補助切替",
+  "key.leadshot.assisted_fire": "補助発射（弓使用中の中クリック）"
 }

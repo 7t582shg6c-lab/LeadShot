@@ -5,5 +5,10 @@
   "key.leadshot.cycle_target": "Cycle target category",
   "key.leadshot.settings": "LeadShot settings",
   "key.leadshot.hud_mode": "Change HUD mode",
-  "key.leadshot.markers": "Toggle aim guides"
+  "key.leadshot.markers": "Toggle aim guides",
+  "key.leadshot.lock_mode": "Toggle manual target lock",
+  "key.leadshot.lock_next": "Next locked target",
+  "key.leadshot.lock_clear": "Clear target lock",
+  "key.leadshot.aim_assist": "Toggle locked-target aim assist",
+  "key.leadshot.assisted_fire": "Assisted bow release (middle click)"
 }

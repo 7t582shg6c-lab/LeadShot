@@ -28,12 +28,43 @@ public final class LeadShotSettingsScreen extends Screen {
             add(x,y+2*step,w,"画角近似: "+o.fov()+"°",()->LeadShot.mutate("fov"));
             add(x,y+3*step,w,"テスト表示: "+flag(o.calibration()),()->LeadShot.mutate("calibration"));
             add(x,y+4*step,w,"匿名誤差監査: "+flag(o.shadowAudit()),()->LeadShot.mutate("shadow"));
-        }else{
+        }else if(page==2){
             add(x,y,w,"ブロック遮蔽検査: "+flag(o.blockCheck()),()->LeadShot.mutate("blockcheck"));
             add(x,y+step,w,"検査上限: 48区間",()->{});
             add(x,y+2*step,w,"未検査は安全と判定しません",()->{});
+            add(x,y+3*step,w,"遮蔽越しの索敵: "+(LeadShot.guideControls().lineOfSightOnly()?"禁止":"許可"),()->LeadShot.changeGuide("los"));
+        }else if(page==3){
+            GuideControls g=LeadShot.guideControls();
+            add(x,y,w,"索敵角: "+g.radiusDegrees()+"°",()->LeadShot.changeGuide("radius"));
+            add(x,y+step,w,"距離: "+g.depthBlocks()+"ブロック",()->LeadShot.changeGuide("depth"));
+            add(x,y+2*step,w,"太さ: "+g.thickness(),()->LeadShot.changeGuide("thickness"));
+            add(x,y+3*step,w,"不透明度: "+g.opacity(),()->LeadShot.changeGuide("opacity"));
+            add(x,y+4*step,w,"色: "+g.color(),()->LeadShot.changeGuide("color"));
+        }else if(page==4){
+            GuideControls g=LeadShot.guideControls();
+            add(x,y,w,"中央ドット: "+flag(g.centerDot()),()->LeadShot.changeGuide("dot"));
+            add(x,y+step,w,"AIM/PRED文字: "+flag(g.labels()),()->LeadShot.changeGuide("labels"));
+            add(x,y+2*step,w,"ガイドの滑らかさ: "+switch(g.smoothing()){case 0->"OFF";case 1->"FAST";case 2->"BALANCED";default->"SMOOTH";},()->LeadShot.changeGuide("smoothing"));
+            add(x,y+3*step,w,"文字倍率: "+(int)(g.fontScale()*100)+"%",()->LeadShot.changeGuide("textsize"));
+            add(x,y+4*step,w,"READY通知: "+switch(g.cueMode()){case 0->"OFF";case 1->"VISUAL";default->"SOUND + VISUAL";},()->LeadShot.changeGuide("cue"));
         }
-        add(x,y+5*step,w,"ページ "+(page+1)+"/3",()->{page=(page+1)%3;});
+        if(page==5){
+            GuideControls g=LeadShot.guideControls();
+            add(x,y,w,"索敵モード: "+(g.searchMode()==0?"CENTER":"RADAR"),()->LeadShot.changeGuide("searchmode"));
+            add(x,y+step,w,"ロック: "+LeadShot.lockStatus(),()->{});
+            add(x,y+2*step,w,"I: ロック切替 / P: 次の対象",()->{});
+            add(x,y+3*step,w,"K: ロック解除",()->{});
+            add(x,y+4*step,w,"RADARでも壁越しは原則除外",()->{});
+        }
+        if(page==6){
+            GuideControls g=LeadShot.guideControls();
+            add(x,y,w,"ロック照準補助: "+flag(g.autoAim()),()->LeadShot.changeGuide("autoaim"));
+            add(x,y+step,w,"追従速度: "+g.assistSpeed()+"°/tick",()->LeadShot.changeGuide("aimspeed"));
+            add(x,y+2*step,w,"補助発射: "+flag(g.assistedFire()),()->LeadShot.changeGuide("autofire"));
+            add(x,y+3*step,w,"右クリック＋ホイール押下で1射",()->{});
+            add(x,y+4*step,w,"手動ロック・敵対モブ・READY必須",()->{});
+        }
+        add(x,y+5*step,w,"ページ "+(page+1)+"/7",()->{page=(page+1)%7;});
         add(x,y+6*step,w,"閉じる",()->onClose());
     }
     private void add(int x,int y,int w,String title,Runnable action){

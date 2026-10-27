@@ -1,88 +1,13 @@
-# LeadShot Fabric 26.3 — v0.32.0-alpha.1
+# LeadShot for Minecraft Java 26.3 / Fabric — v0.36.0-alpha.1
 
-**これはMinecraft 26.3 / Fabric向けの開発用統合ソースです。コンパイル済みMOD JARではありません。**
+LeadShot is an experimental **client-side bow prediction and guided manual target selection** mod. This source tree adds a deliberate opt-in aim-assist and single-action assisted release on top of the v0.35 HUD, READY cue, radar-mode target acquisition, tracking and projected target guides.
 
-v0.30.0統合ソースを直接更新しました。**v0.25のソースや途中の差分パッチは不要**です。このZIPに全ソース・設定・テスト・GitHub Actionsを収録しています。
+**No v0.36 compiled JAR is included**. This version was tested with local Java 21 math tests and synthetic API stubs, **not** with the real Fabric 26.3 development/runtime environment. Use GitHub Actions Java 25 with Fabric 26.3 to confirm compilation.
 
-## v0.32 新機能：クライアント側で実際の矢を観測する発射／飛行診断
+- **O** options; **I** lock; **P** cycle target; **K** clear; **J** toggle autoaim.
+- **Right mouse held + mouse-wheel click**: one attempted assisted bow shot only if the opt-in setting is enabled and stringent READY conditions are met. No auto-repeat; no auto attack against players.
+- Bow must be drawn before aim assist steers; steering uses a max 1–4° each tick and must see clear checked trajectory.
+- See [MIGRATION_NOTES_v036.md](MIGRATION_NOTES_v036.md) for all safety conditions and build instructions.
+- [INTEGRATION_STATUS.md](INTEGRATION_STATUS.md) records exactly what is and isn't verified.
 
-設定画面2ページ目で「匿名誤差監査」をON、HUD表示をANALYSISにすると、
-新たに**観測矢の件数／弓使用終了候補の件数／矢の軌道誤差**が表示されます。
-
-- `AbstractArrow`のうち、**このクライアントの射手が所有者と確認できるものだけ**を最大48件観測します。トライデントは除外します。
-- 弓の使用終了は**発射候補**として記録。使用終了後8tick以内に射手の近くで矢が観測されて初めて「観測矢」に加算します。
-- **既に視認されていた矢のUUIDは発射候補と結び付けません。**
-- 観測した矢の初期速度と予測速度を比較し、飛行中はクライアントで取得した矢の位置と簡易物理モデルの位置差を記録します。平均・直近P90を画面表示します。
-- 未観測の発射、矢の消失、静止は**命中・外れ・着弾を意味しません**。プレイヤーやMobの体力・ダメージにはアクセスしません。
-- 全履歴は**セッション内メモリ限定**で、統計ログに対象名／UUID／座標を含めません。OFFおよびワールド変更時に消去します。
-- 発射ごとの追尾は最大32件、候補は12件、軌道誤差は直近256サンプルまで。クライアント補間や矢所有者未同期の影響を受けます。
-
-**重要:** これは以前のShot Analyzer/Launch Auditに近づくための、読み取り専用の**部分復元**です。
-サーバー側の命中、与ダメージ、着弾面、矢の消滅原因を特定する機能ではありません。
-ローカルの単体テストと合成API型チェックは通過しましたが、Minecraft 26.3内での発射観測は未確認です。
-
-## v0.31 新機能：使用終了時の予測誤差分析と3D形状の復元準備
-
-- 弓を使い終えた時点の**モブの未来位置予測**を一時保存し、予測されたtickにモブを再観測できた場合に限り、誤差の平均値とP90を比較します。HUDの**ANALYSIS**モードで「使用終了の誤差」を表示。設定画面の「匿名誤差監査」をONにした場合のみ実行します。欠測やチャンク移動時に値を作りません。
-- **重要：弓を使い終えたことと、実際に発射して命中したことは同じではありません。** 新しい誤差は**未来のモブ位置予測の誤差**で、実際の矢の軌道・ダメージ・着弾の統計ではありません。
-- 照準用3Dリング・未来位置リング・未来当たり判定枠・弾道を、最大56本の**ワールド座標線分**として用意する`WorldGuideGeometry`を追加しました。内部の幾何生成とテストまで行い、26.3の実際のレベル描画処理は未接続です。表示されるリングは従来どおりHUD投影です。
-- 数値テスト：新しいShotReleaseAudit 12,104アサーションと、WorldGuideGeometry 283,642チェックが成功しました。既存の回帰テストも成功。
-
-## v0.30 新機能：3モデル予測の一致評価
-
-前版では、矢の着弾・移動AABBの単一モデルとブロック遮蔽を推定しました。v0.30では、すでに選ばれた照準候補に対し次の3モデルを比較します。
-
-- **標準モデル**：空気抵抗0.990、重力0.050
-- **やや落ちやすいモデル**：空気抵抗0.988、重力0.054
-- **やや落ちにくいモデル**：空気抵抗0.992、重力0.046
-
-移動する標的のAABBとの連続接触を比較し、3/3一致、不一致、全モデル接触なしを区別します。**モデルの一致は命中確率や命中保証ではありません**。物理値の差分は予測誤差への感度を見るためのもので、26.3の実際の矢の物理を校正した結果ではありません。
-
-- HUDの **3モデル支持: x/3** と、安全側に倒した状態ラベルを追加。
-- ワールド内座標から投影した照準リング（AIM）と未来位置リング（PRED）をHUDに追加。
-- ブロック遮蔽があれば赤、3モデル一致かつ検査したブロック経路に遮蔽がなければ緑、それ以外は黄・橙。**緑でも「命中確定」ではありません。**
-- 新しい予測処理は**最終的に選んだ1対象のみ**に実行し、モブが密集したときの計算量を制限。
-- UIとキー操作は従来のv0.29と同様。
-
-**重要：追加したリングは3D位置を使った画面上の投影表示で、深度テストを伴うワールド内3Dオブジェクトではありません。** 実際のHUD画角、三人称視点、未ロードのチャンク、流体、矢の散らばり、複数Entity、サーバーとのtick差などによる誤差は解決していません。
-
-## 従来から統合済みの機能
-
-プレイヤー／敵対モブ／その他LivingEntityの対象検索、簡易弾道計算、弓のチャージ、未来位置予測、未来AABB表示、弾道点、移動AABBの連続接触判定、ブロック遮蔽検査、5/10/20tickの適応型予測比較監査（任意ON）、HUD、設定画面、ローカル設定保存を含みます。
-
-自動視点補正、自動射撃は無効のままです。Shot Analyzer・Launch Auditは矢の観測まで部分復元しましたが、**完全な機能同等性は未達成**です。
-
-## 対応する開発環境
-
-| 項目 | バージョン |
-| --- | --- |
-| Minecraft | Java Edition 26.3 |
-| MODローダー | Fabric Loader 0.20.1 |
-| Fabric API | 0.165.0+26.3 |
-| JDK | **25** |
-| Gradle | **9.8.2**（GitHub Actions、セキュリティ修正を含むバージョン） |
-| Fabric Loom | 1.19-SNAPSHOT |
-
-## Windows / Prism Launcherでのビルドと試験
-
-1. このZIPを展開し、JDK 25とGradle 9.8.2をインストールします。`java -version`で25を確認します。
-2. 展開フォルダーのコマンドプロンプトで`build.bat > build-output.txt 2>&1`を実行します。
-3. ビルドが成功した場合だけ、`build/libs/leadshot-fabric-26.3-0.32.0-alpha.1.jar`（`-sources.jar`以外）をMinecraft 26.3の**Fabric**インスタンスへ配置します。
-4. Fabric APIの26.3対応版も入れてください。旧版LeadShotは同時に導入しないでください。
-5. 新しいシングルプレイのクリエイティブワールドで、Oで設定、Gでガイド、UでHUD、Vで予測、Nで対象カテゴリ、BでHUD詳細度をテストします。
-6. ゾンビなどを召喚して弓を引き、AIM/PREDと「3モデル支持」を確認します。ブロックを置いて遮蔽表示も確認します。
-
-Gradle・Java 25が手元になくても、同梱`.github/workflows/fabric-build.yml`をGitHubリポジトリのルートへ設置して**GitHub ActionsでJava 25の実ビルドを試す**ことができます。ワークフローは本環境では実行しておらず、ビルド成功は保証しません。
-
-## 検証方法
-
-```bash
-bash tools/test-v030.sh       # 今回追加の3モデル、照準リング、表示状態
-bash tools/verify-local.sh    # すべての独立Java計算回帰・矢の観測テスト・模擬Fabric API構文チェック
-```
-
-**これらはJDK21でも実行できる独立テストです。実Fabric 26.3のAPIに対するコンパイル・Minecraft起動の検証ではありません。**
-
-ビルド時のエラー全文（`build-output.txt`）またはゲーム内の`logs/latest.log`が得られたら、まず発生箇所を修正する必要があります。
-
-参考: [Fabric公式26.3](https://fabricmc.net/2026/09/15/263.html)、[Fabric公式開発例](https://github.com/FabricMC/fabric-example-mod/tree/26.3)、[Fabric API公開リリース](https://github.com/FabricMC/fabric-api/releases)、[Gradle公式リリース](https://gradle.org/releases/)。
+Existing Fabric API and Java 25 requirements are in `gradle.properties`, `build.gradle` and `fabric.mod.json`. The GitHub root-upload ZIP flattens `src/main/java/dev/leadshot/*.java` and asset JSON at repository root to match the user repository's existing Actions staging script.
