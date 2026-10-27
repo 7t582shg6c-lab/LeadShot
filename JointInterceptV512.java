@@ -51,8 +51,13 @@ public final class JointInterceptV512 {
         Score now=score(currentOrigin,inheritedVelocity,presentShot,targetPath,targetHalf,
                 targetCenter,targetVelocity,cameraYaw,cameraPitch,0,policy);
         if(now==null)return new Evaluation(0,1,Double.NaN,Double.NaN,"present-not-comparable");
-        double best=Double.POSITIVE_INFINITY;
-        int delayChosen=0,checks=1;
+        // Gather one bounded set of physically verified launch opportunities.
+        // v0.51.3 ranks complete contact windows, not only the single most
+        // convenient future bearing. Current release eligibility is untouched.
+        var opportunities=new ArrayList<InterceptOpportunityV513.Sample>(requestedMaxDelay+1);
+        opportunities.add(new InterceptOpportunityV513.Sample(0,now.value(),
+                now.dwellTicks(),now.clearance()));
+        int checks=1;
         for(int delay=1;delay<=requestedMaxDelay;delay++){
             ShooterFrame launch=futureShooter(currentOrigin,inheritedVelocity,
                     cameraYaw,cameraPitch,delay,shooterGliding);
@@ -76,15 +81,20 @@ public final class JointInterceptV512 {
             Score candidate=score(launch.origin(),launch.inherited(),fitted.shot(),
                     remaining,targetHalf,center,velocity,cameraYaw,cameraPitch,
                     delay,policy);
-            if(candidate!=null && candidate.value()<best){
-                best=candidate.value();delayChosen=delay;
-            }
+            if(candidate!=null)opportunities.add(new InterceptOpportunityV513.Sample(
+                    delay,candidate.value(),candidate.dwellTicks(),candidate.clearance()));
         }
-        if(delayChosen==0)return new Evaluation(0,checks,now.value(),Double.NaN,"no-future-contact");
-        return new Evaluation(delayChosen,checks,now.value(),best,"compared");
+        var evidence=knownTargetPath!=null ? InterceptOpportunityV513.Evidence.TRAINED_CURVE
+                :InterceptOpportunityV513.Evidence.LINEAR_ONLY;
+        var ranked=InterceptOpportunityV513.rank(policy,evidence,requestedMaxDelay,opportunities);
+        if(ranked.bestDelayTicks()==0)return new Evaluation(0,checks,
+                ranked.currentCost(),Double.NaN,ranked.reason());
+        return new Evaluation(ranked.bestDelayTicks(),checks,ranked.currentCost(),
+                ranked.bestFutureCost(),ranked.reason()+":valid="+ranked.validLaunchTicks()+
+                ":width="+ranked.bestContiguousWidth()+":evidence="+ranked.evidence());
     }
 
-    private record Score(double value,double clearance) {}
+    private record Score(double value,double clearance,double dwellTicks) {}
     private record ShooterFrame(CoreBallistics.Vec origin,CoreBallistics.Vec inherited) {}
     private static ShooterFrame futureShooter(CoreBallistics.Vec origin,
             CoreBallistics.Vec inherited,double yaw,double pitch,int delay,boolean gliding){
@@ -134,13 +144,34 @@ public final class JointInterceptV512 {
                 SPEED,Math.max(.18,SPEED*.1)).geometricContact())return null;
         CanonicalArrowV48.Trace trace=CanonicalArrowV48.air(origin,launched,path.size()-1);
         if(trace==null)return null;
-        double clearance=0;
+        double clearance=0,dwellTicks=0;
         // No second coarse inverse search: evaluate at most 20 flight ticks
         // around the actual contact and sample five positions per tick.
         int max=Math.min(MAX_FLIGHT+2,trace.duration());
         for(int tick=0;tick<max;tick++){
             var a=trace.at(tick).position();var b=trace.at(tick+1).position();
             var ta=path.get(tick);var tb=path.get(tick+1);
+            // The duration of swept AABB overlap provides a separate
+            // temporal robustness signal for grazing vs interior shots.
+            var relativeStart=a.minus(ta);
+            var relativeStep=b.minus(a).minus(tb.minus(ta));
+            double enter=0,exit=1;
+            double[] starts={relativeStart.x(),relativeStart.y(),relativeStart.z()};
+            double[] steps={relativeStep.x(),relativeStep.y(),relativeStep.z()};
+            double[] bounds={half.x()+RADIUS,half.y()+RADIUS,half.z()+RADIUS};
+            for(int axis=0;axis<3;axis++){
+                if(Math.abs(steps[axis])<1e-12){
+                    if(Math.abs(starts[axis])>bounds[axis]){enter=2;break;}
+                }else{
+                    double first=(-bounds[axis]-starts[axis])/steps[axis];
+                    double last=(bounds[axis]-starts[axis])/steps[axis];
+                    if(first>last){double tmp=first;first=last;last=tmp;}
+                    enter=Math.max(enter,first);exit=Math.min(exit,last);
+                    if(enter>exit)break;
+                }
+            }
+            if(enter<=exit && enter<=1 && exit>=0)
+                dwellTicks+=Math.max(0,Math.min(1,exit)-Math.max(0,enter));
             for(int k=0;k<=4;k++){
                 double f=k*.25;
                 var d=a.add(b.minus(a).times(f)).minus(ta.add(tb.minus(ta).times(f)));
@@ -159,6 +190,7 @@ public final class JointInterceptV512 {
                 policy.theater()==EngagementProfileV511.Theater.GROUND_TO_AIR ? .16 :.08);
         double value=.20*angle-3.0*clearance+delay*(.22+airPenalty)+
                 delay*.06*policy.relativeSpeed()+Math.min(1.5,shot.speedMismatch()*2);
-        return Double.isFinite(value)?new Score(value,clearance):null;
+        return Double.isFinite(value)&&Double.isFinite(dwellTicks)
+                ?new Score(value,clearance,Math.min(2.0,dwellTicks)):null;
     }
 }

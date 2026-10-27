@@ -119,6 +119,8 @@ public final class InterceptWindowV51 {
         int checks=optimized.candidatesChecked();
         double present=optimized.presentScore();
         double future=optimized.bestFutureScore();
+        // JointInterceptV512 v0.51.3 returns degree-equivalent heuristic costs.
+        // The policy threshold is now compared on a consistent cost scale.
         double requiredGain=Math.max(MIN_GAIN_DEGREES,policy.minimumGainDegrees());
         if(optimized.bestWaitTicks()==0 || !Double.isFinite(present) ||
                 !Double.isFinite(future) || present-future<requiredGain){
@@ -128,7 +130,7 @@ public final class InterceptWindowV51 {
         }
         holds++;
         return new Decision(false,optimized.bestWaitTicks(),checks,present,future,
-                "joint-future-window-preferred:"+policy.theater());
+                "joint-future-window-preferred:"+policy.theater()+":"+optimized.reason());
     }
 
     private static Decision pass(String reason){
