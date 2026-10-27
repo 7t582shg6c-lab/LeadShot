@@ -118,8 +118,6 @@ public final class LeadShot implements ClientModInitializer {
         try{guideOptions=GuideControls.read(GUIDE_CONFIG);}catch(Exception e){System.err.println("[LeadShot] guide config: "+e);}
         overlayMode=ScanOverlayPreference.read(OVERLAY_CONFIG);
         advancedAim=AdvancedAimOptions.read(ADVANCED_CONFIG);
-        AdaptiveLeadV49.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
-                .resolve("leadshot-adaptive-v049.properties"));
         for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
@@ -129,7 +127,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
+        if(mc.level!=lastLevel){SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
@@ -206,8 +204,6 @@ public final class LeadShot implements ClientModInitializer {
             }
         }
         SharedObservationV484.INSTANCE.publish(mc.level,tick,sharedSamples);
-        AdaptiveLeadV49.INSTANCE.acceptFrame(mc.level,
-                SharedObservationV484.INSTANCE.latest(mc.level,tick,0));
         observations.entrySet().removeIf(e->tick-e.getValue().tick()>25);
         // Purge entity caches on death/despawn/category change; never reuse UUID stale data.
         WARM.retain(speeds.keySet());
@@ -409,29 +405,15 @@ public final class LeadShot implements ClientModInitializer {
         // ALWAYS recompute the selected trajectory from CURRENT observation before
         // contact tests, guidance, READY, steering or assisted fire. Cached hints
         // must never authorize a shot or display falsely fresh contact geometry.
-        // Opt-in high-mobility lead. The bounded correction defaults to CV and
-        // never overrides the existing READY, LOS, or release gates.
-        AdaptiveLeadV49.Adjustment adaptiveLead=AdaptiveLeadV49.INSTANCE.adjust(selected,tick,
-                chosen.shot().ticks(),vec(chosen.entity().getBoundingBox().getCenter()),
-                chosen.velocity(),chosen.half());
-        CoreBallistics.Vec adaptedVelocity=adaptiveLead.velocity();
-        CoreBallistics.Solution preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),adaptedVelocity,
+        CoreBallistics.Solution preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),chosen.velocity(),
                 shootVelocity,CoreBallistics.FULL_BOW_SPEED);
-        // A trained motion forecast may still produce an impossible bow arc.
-        // Revert the same shot to the original CV/legacy solution in that case.
-        if(adaptiveLead.applied() && (preciseShot==null ||
-                preciseShot.speedMismatch()>Math.max(.18,speed*.10))){
-            adaptedVelocity=chosen.velocity();
-            preciseShot=CoreBallistics.solveRefined(launchOrigin,chosen.center(),adaptedVelocity,
-                    shootVelocity,CoreBallistics.FULL_BOW_SPEED);
-        }
         if(preciseShot==null || preciseShot.speedMismatch()>Math.max(.18,speed*.10)){
             radarMark=null;
             SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;
         }
         ContactAudit.Result preciseContact=ContactAudit.evaluate(launchOrigin,preciseShot,chosen.center(),
-                adaptedVelocity,chosen.half(),shootVelocity,speed,Math.max(.18,speed*.10));
-        chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),adaptedVelocity,
+                chosen.velocity(),chosen.half(),shootVelocity,speed,Math.max(.18,speed*.10));
+        chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),chosen.velocity(),
                 chosen.half(),preciseContact,chosen.score());
         // Vanilla launches the bow at EXACT full-charge speed. The inverse solver
         // returns a REQUIRED speed which may differ. All downstream simulation
