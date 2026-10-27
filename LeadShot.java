@@ -127,7 +127,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
+        if(mc.level!=lastLevel){SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
@@ -181,6 +181,7 @@ public final class LeadShot implements ClientModInitializer {
             }
             scanContacts=List.copyOf(contacts);
         }else scanContacts=List.of();
+        List<SharedObservationV484.Sample> sharedSamples=new ArrayList<>(count);
         Map<UUID,CoreBallistics.Vec> speeds=new HashMap<>();
         Map<UUID,CoreBallistics.Vec> ballisticSpeeds=new HashMap<>();
         PrecomputePolicy.Plan depthPlan=PrecomputePolicy.plan(guideOptions.computationMode());
@@ -192,12 +193,17 @@ public final class LeadShot implements ClientModInitializer {
             speeds.put(id,velocity);
             ballisticSpeeds.put(id,FlightTargetPredictor.forecast(velocity,old==null?null:old.filteredVelocity()));
             observations.put(id,new Tracked(center,tick,velocity));
+            AABB observedBox=entity.getBoundingBox();
+            sharedSamples.add(new SharedObservationV484.Sample(id,center,velocity,
+                    new CoreBallistics.Vec(observedBox.getXsize()*.5,observedBox.getYsize()*.5,
+                            observedBox.getZsize()*.5),!entity.onGround()));
             STAGES.observe(id,tick,center,velocity,depthPlan.precomputesMotion());
             if(options.shadowAudit()){
                 SHADOW.observe(id,tick,center.x(),center.y(),center.z());
                 RELEASE_AUDIT.observe(id,tick,center);
             }
         }
+        SharedObservationV484.INSTANCE.publish(mc.level,tick,sharedSamples);
         observations.entrySet().removeIf(e->tick-e.getValue().tick()>25);
         // Purge entity caches on death/despawn/category change; never reuse UUID stale data.
         WARM.retain(speeds.keySet());
