@@ -23,6 +23,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
     private static final Path CONFIG=FabricLoader.getInstance().getConfigDir()
             .resolve("leadshot-flight-shadow.properties");
     private final ArrowTelemetryV48 measurements=new ArrowTelemetryV48();
+    private final GlideCalibrationV501 glideCalibration=new GlideCalibrationV501();
     // Independent opt-in diagnostics: mirrors the 64 contact cap but does not
     // change LeadShot's original targeting or self-reported READY state.
     // Motion model tracking is now shared with LeadShot via AdaptiveLeadV49.INSTANCE.
@@ -37,6 +38,8 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
     private boolean enabled;
     @Override public void onInitializeClient(){
         enabled=readEnabled();
+        glideCalibration.readConfiguration(FabricLoader.getInstance().getConfigDir()
+                .resolve("leadshot-glide-calibration-v0501.properties"));
         ClientTickEvents.END_CLIENT_TICK.register(this::sample);
         System.out.println("[LeadShot v0.49.0] 飛行物理・共有観測フレーム・運動モデル適応の診断="+(enabled?"有効":"無効")+
                 " (config/leadshot-flight-shadow.properties)");
@@ -51,11 +54,22 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
     private void sample(Minecraft mc){
         tick++;
         if(lastWorld!=mc.level){
-            lastWorld=mc.level;measurements.clear();
+            lastWorld=mc.level;measurements.clear();glideCalibration.reset();
             AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);
             observedWorld=mc.level;
         }
         observedTick=tick;
+        // Independent opt-in flight measurements, regardless of arrow-shadow config.
+        if(glideCalibration.enabled() && mc.player!=null && mc.level!=null){
+            var pilot=mc.player;
+            Vec3 p=pilot.position(),v=pilot.getDeltaMovement();
+            glideCalibration.sample(new GlideCalibrationV501.Sample(tick,
+                    new CoreBallistics.Vec(p.x,p.y,p.z),
+                    new CoreBallistics.Vec(v.x,v.y,v.z),pilot.getYRot(),pilot.getXRot(),
+                    pilot.isFallFlying(),pilot.horizontalCollision));
+            if(tick%glideCalibration.logInterval()==0)
+                System.out.println(glideCalibration.report());
+        }
         if(!enabled || mc.level==null || mc.player==null)return;
         var shooter=mc.player;
         // LeadShot has already ranked and sampled the same 64 contacts.
