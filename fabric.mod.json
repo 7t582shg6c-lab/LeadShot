@@ -3,17 +3,11 @@
   "id": "leadshot",
   "version": "${version}",
   "name": "LeadShot / 日本語火器管制支援",
-  "description": "弓の偏差照準・動体追跡・戦術HUD・64体の事前計算・索敵枠・高速飛行への照準補正・補助発射に対応するクライアントMOD。",
-  "authors": [
-    "LeadShot project"
-  ],
+  "description": "弓の偏差照準・動体追跡・索敵枠・高速飛行への照準補正・実験的な飛行物理診断を備えたクライアントMOD。",
+  "authors": ["LeadShot project"],
   "license": "MIT",
   "environment": "client",
-  "entrypoints": {
-    "client": [
-      "dev.leadshot.LeadShot"
-    ]
-  },
+  "entrypoints": {"client": ["dev.leadshot.LeadShot", "dev.leadshot.LeadShotFlightObserverV48"]},
   "depends": {
     "fabricloader": ">=0.20.1",
     "minecraft": "~26.3",
