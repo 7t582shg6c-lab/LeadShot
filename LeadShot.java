@@ -37,7 +37,7 @@ import java.util.UUID;
 
 /**
  * Fabric 26.3 integrated ALPHA. Client-only 2D projection of 3D math.
- * No camera steering, packet writing, guaranteed contacts, or wall occlusion claims.
+ * Assist is opt-in. Bow trajectory math runs only at full draw; idle radar uses lightweight acquisition.
  */
 public final class LeadShot implements ClientModInitializer {
     private static final KeyMapping.Category CATEGORY = KeyMapping.Category.register(
@@ -50,11 +50,10 @@ public final class LeadShot implements ClientModInitializer {
     private static final KeyMapping LOCK_MODE = key("key.leadshot.lock_mode", InputConstants.KEY_I);
     private static final KeyMapping LOCK_NEXT = key("key.leadshot.lock_next", InputConstants.KEY_P);
     private static final KeyMapping LOCK_CLEAR = key("key.leadshot.lock_clear", InputConstants.KEY_K);
+    private static final KeyMapping HUD_STYLE = key("key.leadshot.hud_style", InputConstants.KEY_H);
     private static final KeyMapping AIM_ASSIST = key("key.leadshot.aim_assist", InputConstants.KEY_J);
-    // Middle mouse: rebind in Minecraft controls if it conflicts with vanilla Pick Block.
-    private static final KeyMapping FIRE_ASSIST = new KeyMapping(
-            "key.leadshot.assisted_fire", InputConstants.Type.MOUSE, 2, CATEGORY);
-    private static final AssistedReleaseGate RELEASE_GATE = new AssistedReleaseGate();
+    // Hold ATTACK+USE while fully drawn to request repeated, gated releases.
+    private static final ContinuousReleaseGate RELEASE_GATE = new ContinuousReleaseGate();
     private static final KeyMapping SETTINGS = key("key.leadshot.settings", InputConstants.KEY_O);
     private static final Path CONFIG = FabricLoader.getInstance().getConfigDir().resolve("leadshot-26.3.properties");
     private static final Path GUIDE_CONFIG = FabricLoader.getInstance().getConfigDir().resolve("leadshot-guides.properties");
@@ -62,6 +61,9 @@ public final class LeadShot implements ClientModInitializer {
     private static boolean locked;
     private static boolean nextLockRequested;
     private static final Map<UUID, Tracked> observations = new HashMap<>();
+    private static final FullDrawWarmCache WARM = new FullDrawWarmCache();
+    private static final StagedPrecomputeCache STAGES = new StagedPrecomputeCache();
+    private static final RoundRobinPrecompute PRECOMPUTE_ORDER = new RoundRobinPrecompute();
     private static final MotionShadowAudit SHADOW = new MotionShadowAudit();
     private static final ShotReleaseAudit RELEASE_AUDIT = new ShotReleaseAudit();
     private static final ObservedArrowAudit ARROW_AUDIT = new ObservedArrowAudit();
@@ -79,7 +81,10 @@ public final class LeadShot implements ClientModInitializer {
     private static AimReadySignal.State readyState = new AimReadySignal.State(false,false,0);
     private static long readyFlashUntil = -1;
 
-    private record Tracked(CoreBallistics.Vec center, long tick) {}
+    private record Tracked(CoreBallistics.Vec center, long tick, CoreBallistics.Vec filteredVelocity) {}
+    private record RadarMark(UUID id, CoreBallistics.Vec center, String name, boolean locked) {}
+    private static RadarMark radarMark;
+    private static int radarCount;
     private record Candidate(LivingEntity entity, CoreBallistics.Solution shot,
                              CoreBallistics.Vec center, CoreBallistics.Vec velocity,
                              CoreBallistics.Vec half, ContactAudit.Result collision,
@@ -90,7 +95,8 @@ public final class LeadShot implements ClientModInitializer {
                            boolean drawing,CoreBallistics.Vec half, BallisticOcclusion.Result obstruction,
                            TrajectoryConsensus.Result consensus) {
         static Preview empty(){return new Preview("なし","-",0,null,null,null,null,false,null,null,null);}
-        static Preview charging(){return new Preview("検索中","-",0,null,null,null,null,true,null,null,null);}
+        static Preview charging(){return charging("最大チャージ待機");}
+        static Preview charging(String name){return new Preview(name,"-",0,null,null,null,null,true,null,null,null);}
     }
     private static KeyMapping key(String text,int id){
         return new KeyMapping(text,InputConstants.Type.KEYBOARD,id,CATEGORY);
@@ -98,7 +104,7 @@ public final class LeadShot implements ClientModInitializer {
     @Override public void onInitializeClient(){
         try{options=LeadShotOptions.read(CONFIG);}catch(Exception e){System.err.println("[LeadShot] config read: "+e);}
         try{guideOptions=GuideControls.read(GUIDE_CONFIG);}catch(Exception e){System.err.println("[LeadShot] guide config: "+e);}
-        for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,FIRE_ASSIST))
+        for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
         HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT,
@@ -107,7 +113,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){lastLevel=mc.level;observations.clear();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();}
+        if(mc.level!=lastLevel){lastLevel=mc.level;observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
@@ -117,31 +123,49 @@ public final class LeadShot implements ClientModInitializer {
         while(LOCK_NEXT.consumeClick())if(mc.gui.screen()==null){locked=true;nextLockRequested=true;}
         while(LOCK_CLEAR.consumeClick())if(mc.gui.screen()==null){locked=false;selected=null;SMOOTHER.reset();nextLockRequested=false;}
         while(AIM_ASSIST.consumeClick())if(mc.gui.screen()==null)changeGuide("autoaim");
-        // Consume this press on the tick it occurs; never remember/queue it for later.
-        boolean fireClicked=false;
-        while(FIRE_ASSIST.consumeClick())if(mc.gui.screen()==null)fireClicked=true;
+        while(HUD_STYLE.consumeClick())if(mc.gui.screen()==null)changeGuide("hudstyle");
         while(SETTINGS.consumeClick())if(mc.gui.screen()==null)mc.gui.setScreen(new LeadShotSettingsScreen());
         LocalPlayer shooter=mc.player;
-        if(shooter==null||mc.level==null){preview=Preview.empty();SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);previousBowUse=false;return;}
+        if(shooter==null||mc.level==null){preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);previousBowUse=false;RELEASE_GATE.reset();return;}
         AABB search=shooter.getBoundingBox().inflate(guideOptions.depthBlocks());
-        List<LivingEntity> targets=mc.level.getEntitiesOfClass(LivingEntity.class,search,
-                e->e!=shooter&&e.isAlive()&&!e.isSpectator()&&eligible(e));
-        targets.sort(Comparator.comparingDouble(shooter::distanceToSqr));
-        int count=Math.min(64,targets.size());
+        List<LivingEntity> nearby=mc.level.getEntitiesOfClass(LivingEntity.class,search,
+                e->e!=shooter && e.isAlive() && !e.isSpectator() && eligible(e)
+                        && shooter.distanceToSqr(e)<=
+                        (double)guideOptions.depthBlocks()*guideOptions.depthBlocks());
+        nearby.sort(Comparator.comparingDouble(shooter::distanceToSqr));
+        // Without pinning, a live manual lock can drop out of a 64-slot tracker
+        // solely because nearer mobs entered the scan volume.
+        List<LivingEntity> targets=TrackingBudget.choose(nearby,
+                e->selected!=null && selected.equals(e.getUUID()),64);
+        int count=targets.size();
+        // Keep explicit locks through temporary LOS loss, but hand off immediately
+        // once the entity is dead, unloaded or has left the configured range.
+        if(locked && selected!=null && !RadarLockHandoff.aliveNearby(selected,
+                targets.stream().map(LivingEntity::getUUID).toList())){
+            selected=null;nextLockRequested=false;SMOOTHER.reset();READY.reset();
+        }
+        radarCount=count;
         Map<UUID,CoreBallistics.Vec> speeds=new HashMap<>();
+        PrecomputePolicy.Plan depthPlan=PrecomputePolicy.plan(guideOptions.computationMode());
         for(int i=0;i<count;i++){
             LivingEntity entity=targets.get(i);
             CoreBallistics.Vec center=vec(entity.getBoundingBox().getCenter());
             UUID id=entity.getUUID();Tracked old=observations.get(id);
             CoreBallistics.Vec velocity=estimate(center,old,tick);
             speeds.put(id,velocity);
-            observations.put(id,new Tracked(center,tick));
+            observations.put(id,new Tracked(center,tick,velocity));
+            STAGES.observe(id,tick,center,velocity,depthPlan.precomputesMotion());
             if(options.shadowAudit()){
                 SHADOW.observe(id,tick,center.x(),center.y(),center.z());
                 RELEASE_AUDIT.observe(id,tick,center);
             }
         }
         observations.entrySet().removeIf(e->tick-e.getValue().tick()>25);
+        // Purge entity caches on death/despawn/category change; never reuse UUID stale data.
+        WARM.retain(speeds.keySet());
+        STAGES.retain(speeds.keySet());
+        // All performance modes run the same 64-slot tracker. Heavy stages are time-sliced.
+        advancePrecompute(mc,shooter,targets,speeds,depthPlan);
         if(options.shadowAudit()){
             SHADOW.expire(tick);
             RELEASE_AUDIT.expire(tick);
@@ -186,8 +210,14 @@ public final class LeadShot implements ClientModInitializer {
             ARROW_AUDIT.expire(tick);
         }
         previousBowUse=bow;
+        // A release requires the current draw cycle to finish, and the next
+        // shot requires a NEW draw cycle (no release spam in a single charge).
+        if(!bow||shooter.getTicksUsingItem()<20)RELEASE_GATE.rearm();
         if(!options.preview()){
-            preview=Preview.empty();SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;
+            preview=Preview.empty();SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
+            // RADAR display remains usable when only ballistic preview is disabled.
+            acquireRadarWithoutBow(mc,shooter,targets,count);
+            return;
         }
         if(!bow){
             SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
@@ -195,6 +225,16 @@ public final class LeadShot implements ClientModInitializer {
             return;
         }
         preview=Preview.charging();
+        // Before 20 use-ticks: no ballistic solution, collision ray tracing,
+        // consensus model, or READY. Lightweight tracker/radar still runs.
+        if(shooter.getTicksUsingItem()<20){
+            SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
+            acquireRadarWithoutBow(mc,shooter,targets,count);
+            preview=Preview.charging(radarMark==null?"最大チャージ待機":radarMark.name());
+            return;
+        }
+        // Keep warm candidates current while fully drawn as well: retargeting should
+        // not require an entire initial prediction sweep at the moment of the switch.
         double power=CoreBallistics.vanillaBowPower(shooter.getTicksUsingItem());
         double speed=CoreBallistics.FULL_BOW_SPEED*power;
         if(speed<.3){SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;}
@@ -202,13 +242,26 @@ public final class LeadShot implements ClientModInitializer {
         CoreBallistics.Vec shootVelocity=vec(shooter.getDeltaMovement());
         Candidate best=null, previous=null;
         List<Candidate> candidates=new ArrayList<>();
-        for(int i=0;i<count;i++){
-            LivingEntity entity=targets.get(i);
+        // Constrain per-tick work; protect a selected target outside the near-only cap.
+        List<LivingEntity> ranked=new ArrayList<>(targets.subList(0,count));
+        ranked.sort(Comparator.comparingDouble(e -> preliminaryScore(shooter,e)));
+        if(selected!=null)for(int i=0;i<ranked.size();i++)
+            if(ranked.get(i).getUUID().equals(selected)){
+                LivingEntity keep=ranked.remove(i);ranked.add(0,keep);break;
+            }
+        // The ACTIVE screening cap does not vary with the precompute stage.
+        int candidateCap=PrecomputePolicy.ACTIVE_CANDIDATES;
+        for(int i=0;i<Math.min(candidateCap,ranked.size());i++){
+            LivingEntity entity=ranked.get(i);
             if(shooter.distanceTo(entity)>guideOptions.depthBlocks())continue;
             if(guideOptions.lineOfSightOnly()&&!canSeeBlockFree(mc,shooter,entity))continue;
             CoreBallistics.Vec center=vec(entity.getBoundingBox().getCenter());
             CoreBallistics.Vec velocity=speeds.get(entity.getUUID());
-            CoreBallistics.Solution shot=CoreBallistics.solve(eye,center,velocity,shootVelocity,speed);
+            CoreBallistics.Vec compensated=TargetVelocityFilter.lead(center,velocity);
+            CoreBallistics.Solution shot=depthPlan.precomputesBallistics()
+                    ? WARM.peek(entity.getUUID(),tick,eye,compensated,velocity,
+                        shootVelocity,depthPlan.cacheTtlTicks()) : null;
+            if(shot==null)shot=CoreBallistics.solve(eye,compensated,velocity,shootVelocity,speed);
             if(shot==null||shot.speedMismatch()>Math.max(.18,speed*.10))continue;
             double yaw=Math.abs(CoreBallistics.wrap(shot.yaw()-shooter.getYRot()));
             double pitch=Math.abs(shot.pitch()-shooter.getXRot());
@@ -217,22 +270,25 @@ public final class LeadShot implements ClientModInitializer {
             AABB bb=entity.getBoundingBox();
             CoreBallistics.Vec half=new CoreBallistics.Vec(
                     Math.max(.01,bb.getXsize()*.5),Math.max(.01,bb.getYsize()*.5),Math.max(.01,bb.getZsize()*.5));
-            ContactAudit.Result contact=ContactAudit.evaluate(eye,shot,center,velocity,half,
-                    shootVelocity,speed,Math.max(.18,speed*.10));
+            // Do not simulate detailed moving-hitbox contact for every candidate.
+            // Only the selected target gets the full contact+occlusion+consensus suite.
             double score=guideOptions.searchMode()==1
                     ? shooter.distanceTo(entity)+10*shot.speedMismatch()
                     : Math.hypot(yaw,pitch)+20*shot.speedMismatch();
-            Candidate c=new Candidate(entity,shot,center,velocity,half,contact,score);
+            Candidate c=new Candidate(entity,shot,compensated,velocity,half,null,score);
             candidates.add(c);
             if(best==null||c.score()<best.score())best=c;
             if(entity.getUUID().equals(selected))previous=c;
         }
-        if(best==null){if(!locked)selected=null;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;}
+        if(best==null){if(!locked)selected=null;radarMark=null;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;}
         Candidate chosen=best;
         if(locked){
             // If an existing lock goes out of view/range, NEVER silently follow a different mob.
             // Only an explicit next command may change the stored UUID.
             if(previous==null && selected!=null && !nextLockRequested){
+                // Preserve UUID, but never leave the last tick's visible marker
+                // on a new obstruction / invalid trajectory.
+                radarMark=null;
                 SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);
                 return;
             }
@@ -247,6 +303,21 @@ public final class LeadShot implements ClientModInitializer {
             }else if(previous!=null)chosen=previous;
         }else if(previous!=null&&!TargetStability.switchToNew(previous.score(),best.score(),true))chosen=previous;
         selected=chosen.entity().getUUID();
+        // ALWAYS recompute the selected trajectory from CURRENT observation before
+        // contact tests, guidance, READY, steering or assisted fire. Cached hints
+        // must never authorize a shot or display falsely fresh contact geometry.
+        CoreBallistics.Solution preciseShot=CoreBallistics.solve(eye,chosen.center(),chosen.velocity(),
+                shootVelocity,CoreBallistics.FULL_BOW_SPEED);
+        if(preciseShot==null || preciseShot.speedMismatch()>Math.max(.18,speed*.10)){
+            radarMark=null;
+            SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);return;
+        }
+        ContactAudit.Result preciseContact=ContactAudit.evaluate(eye,preciseShot,chosen.center(),
+                chosen.velocity(),chosen.half(),shootVelocity,speed,Math.max(.18,speed*.10));
+        chosen=new Candidate(chosen.entity(),preciseShot,chosen.center(),chosen.velocity(),
+                chosen.half(),preciseContact,chosen.score());
+        WARM.store(selected,tick,eye,chosen.center(),chosen.velocity(),shootVelocity,preciseShot);
+        radarMark=new RadarMark(selected,chosen.center(),chosen.entity().getName().getString(),locked);
         // Ray-test only the ONE selected solution, not every candidate. A geometric
         // contact is necessary but never sufficient for an actual successful hit.
         BallisticOcclusion.Result obstruction = options.blockCheck() && chosen.collision().geometricContact()
@@ -276,29 +347,38 @@ public final class LeadShot implements ClientModInitializer {
         // Steering requires a deliberate lock and a clear, checked projectile route.
         // This deliberately does not aim at neutral mobs through unchecked terrain.
         boolean clearRoute=obstruction.state()==BallisticOcclusion.State.CLEAR;
-        if(guideOptions.autoAim() && locked && clearRoute && status==ShotConfidence.Status.CONSISTENT_ESTIMATE
+        // Works in CENTER and RADAR; an explicit manual lock is optional.
+        // Never steer toward other players or neutral mobs.
+        if(guideOptions.autoAim() && chosen.entity() instanceof Enemy && clearRoute
+                && status==ShotConfidence.Status.CONSISTENT_ESTIMATE
                 && guideOptions.lineOfSightOnly() && mc.gui.screen()==null){
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
-                    chosen.shot().yaw(),chosen.shot().pitch(),guideOptions.assistSpeed(),true);
+                    chosen.shot().yaw(),chosen.shot().pitch(),guideOptions.aimRateTenths()/10.0,true);
             if(move.moved()){
                 shooter.setYRot((float)move.yaw());
                 shooter.setXRot((float)move.pitch());
             }
         }
+        // A moving, distant or small target gets a narrower READY cone.
+        AimReadinessCriteria.Bounds limits=AimReadinessCriteria.bounds(
+                shooter.distanceTo(chosen.entity()),chosen.half(),chosen.velocity().length());
         readyState=READY.update(selected,tick,
                 CoreBallistics.wrap(chosen.shot().yaw()-shooter.getYRot()),
-                chosen.shot().pitch()-shooter.getXRot(),status,power>=0.99);
+                chosen.shot().pitch()-shooter.getXRot(),status,power>=0.99,
+                limits.yawDegrees(),limits.pitchDegrees());
         if(readyState.pulse() && guideOptions.cueMode()>=1){
             readyFlashUntil=tick+4;
             if(guideOptions.cueMode()==2){
                 mc.getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK.value(),1.7f,0.22f));
             }
         }
-        // Assisted release is a SINGLE explicit middle-button action, not continuous fire.
-        // Restrict to hostile mobs and verified clear routes; do not fire at players.
-        // If READY is false on the button-press tick, the click is discarded.
-        if(RELEASE_GATE.allow(tick,fireClicked,guideOptions.assistedFire(),locked,
-                bow,mc.options.keyUse.isDown(),chosen.entity() instanceof Enemy,
+        // Continuously held ATTACK+USE is an opt-in request, not a
+        // forced shot: every draw cycle must reach full power AND READY again.
+        // Vanilla should restart using the bow while USE stays held; this
+        // behavior still requires a real 26.3 in-game test.
+        if(RELEASE_GATE.allow(tick,guideOptions.assistedFire(),
+                mc.gui.screen()==null && mc.options.keyAttack.isDown() && mc.options.keyUse.isDown(),
+                bow,shooter.getTicksUsingItem()>=20,chosen.entity() instanceof Enemy,
                 clearRoute && status==ShotConfidence.Status.CONSISTENT_ESTIMATE
                         && guideOptions.lineOfSightOnly(),readyState.ready()) && mc.gameMode!=null){
             mc.gameMode.releaseUsingItem(shooter);
@@ -307,28 +387,85 @@ public final class LeadShot implements ClientModInitializer {
                 chosen.entity() instanceof Player?"PLAYER":chosen.entity() instanceof Enemy?"HOSTILE":"MOB",
                 shooter.distanceTo(chosen.entity()),eye,shootVelocity,chosen.shot(),chosen.collision(),true,chosen.half(),obstruction,consensus);
     }
+    /** Cheap all-mode entity ranking: avoid repeated 80-tick trajectory simulations. */
+    private static double preliminaryScore(LocalPlayer shooter,LivingEntity entity){
+        double distance=shooter.distanceTo(entity);
+        if(guideOptions.searchMode()==1)return distance;
+        Vec3 eye=shooter.getEyePosition(),center=entity.getBoundingBox().getCenter();
+        // DEFAULT/HIGH/ALL use the per-entity lightweight 5t projection for
+        // bearing ranking. LOW ranks the actual position without lookahead.
+        StagedPrecomputeCache.Motion motion=STAGES.motion(entity.getUUID());
+        if(motion!=null)center=new Vec3(motion.at5().x(),motion.at5().y(),motion.at5().z());
+        double dx=center.x-eye.x,dy=center.y-eye.y,dz=center.z-eye.z;
+        double yaw=Math.toDegrees(Math.atan2(-dx,dz));
+        double pitch=-Math.toDegrees(Math.atan2(dy,Math.hypot(dx,dz)));
+        return Math.hypot(CoreBallistics.wrap(yaw-shooter.getYRot()),pitch-shooter.getXRot())+distance*.03;
+    }
+    /**
+     * Progressive depth on ALL tracked entities, independent of CENTER/RADAR and
+     * bow charge. LOW tracks; DEFAULT adds 5/10/20t motion lookahead for all;
+     * HIGH incrementally solves full-power bow bearings for all 64;
+     * ALL additionally runs provisional moving-AABB/contact, block, and model audits.
+     * These are NEVER used as authority for READY or assisted release.
+     */
+    private static void advancePrecompute(Minecraft mc,LocalPlayer shooter,
+            List<LivingEntity> targets,Map<UUID,CoreBallistics.Vec> speeds,PrecomputePolicy.Plan plan){
+        if(!plan.precomputesBallistics())return;
+        CoreBallistics.Vec eye=vec(shooter.getEyePosition());
+        CoreBallistics.Vec shooterVelocity=vec(shooter.getDeltaMovement());
+        // Every tracked entity obtains a turn over successive ticks, not just
+        // the nearest N entities. The per-tick cap bounds frame-time spikes.
+        for(LivingEntity entity:PRECOMPUTE_ORDER.next(targets,plan.heavyUpdatesPerTick(),LivingEntity::getUUID)){
+            UUID id=entity.getUUID();
+            CoreBallistics.Vec velocity=speeds.get(id);
+            if(velocity==null)continue;
+            if(guideOptions.lineOfSightOnly()&&!canSeeBlockFree(mc,shooter,entity))continue;
+            CoreBallistics.Vec center=TargetVelocityFilter.lead(
+                    vec(entity.getBoundingBox().getCenter()),velocity);
+            CoreBallistics.Solution shot=WARM.warm(id,tick,eye,center,velocity,
+                    shooterVelocity,plan.cacheTtlTicks());
+            if(shot==null)continue;
+            STAGES.ballistic(id,tick);
+            if(!plan.precomputesAudits())continue;
+            AABB box=entity.getBoundingBox();
+            CoreBallistics.Vec half=new CoreBallistics.Vec(
+                    Math.max(.01,box.getXsize()*.5),Math.max(.01,box.getYsize()*.5),
+                    Math.max(.01,box.getZsize()*.5));
+            ContactAudit.Result contact=ContactAudit.evaluate(eye,shot,center,velocity,
+                    half,shooterVelocity,CoreBallistics.FULL_BOW_SPEED,.30);
+            BallisticOcclusion.Result blocks=options.blockCheck()&&contact.geometricContact()
+                    ? BallisticOcclusion.evaluate(eye,shot.launchVelocity().add(shooterVelocity),
+                            contact.contactTick(),ClientBlockOcclusion.probe(mc.level,shooter))
+                    : new BallisticOcclusion.Result(BallisticOcclusion.State.UNCHECKED,0,0,Double.NaN);
+            TrajectoryConsensus.Result consensus=TrajectoryConsensus.evaluate(
+                    eye,shot.launchVelocity().add(shooterVelocity),center,velocity,half,.12,
+                    Math.min(CoreBallistics.MAX_TICKS,shot.ticks()+3));
+            STAGES.audited(id,tick,new StagedPrecomputeCache.Audit(contact,blocks,consensus));
+        }
+    }
     /** Radar mode can select and cycle targets before the player draws a bow.
      * Does not send packets, alter aim, or predict a shot while the bow is idle.
      * Caps scans to keep the per-tick cost bounded on dense mob farms.
      */
     private static void acquireRadarWithoutBow(Minecraft mc,LocalPlayer shooter,
                                                 List<LivingEntity> targets,int count){
-        if(guideOptions.searchMode()!=1){preview=Preview.empty();return;}
+        if(guideOptions.searchMode()!=1){preview=Preview.empty();radarMark=null;return;}
         List<LivingEntity> available=new ArrayList<>();
-        for(int i=0;i<Math.min(count,32);i++){
+        for(int i=0;i<count;i++){
             LivingEntity e=targets.get(i);
             if(shooter.distanceTo(e)>guideOptions.depthBlocks())continue;
             if(guideOptions.lineOfSightOnly()&&!canSeeBlockFree(mc,shooter,e))continue;
             available.add(e);
         }
+        radarCount=available.size();
         if(available.isEmpty()){
             if(!locked)selected=null;
-            preview=Preview.empty();return;
+            radarMark=null;preview=Preview.empty();return;
         }
         LivingEntity choice=null;
         if(locked && selected!=null && !nextLockRequested){
             for(LivingEntity e:available)if(e.getUUID().equals(selected)){choice=e;break;}
-            if(choice==null){preview=Preview.empty();return;} // preserve missing target UUID
+            if(choice==null){radarMark=null;preview=Preview.empty();return;} // preserve temporarily hidden lock
         }else if(nextLockRequested){
             int index=-1;
             for(int i=0;i<available.size();i++)
@@ -338,8 +475,10 @@ public final class LeadShot implements ClientModInitializer {
         }else if(!locked || selected==null){
             choice=available.get(0);
         }
-        if(choice==null){preview=Preview.empty();return;}
+        if(choice==null){radarMark=null;preview=Preview.empty();return;}
         selected=choice.getUUID();
+        radarMark=new RadarMark(selected,vec(choice.getBoundingBox().getCenter()),
+                choice.getName().getString(),locked);
         preview=new Preview(choice.getName().getString(),
                 choice instanceof Player?"PLAYER":choice instanceof Enemy?"HOSTILE":"MOB",
                 shooter.distanceTo(choice),null,null,null,null,false,null,null,null);
@@ -357,8 +496,8 @@ public final class LeadShot implements ClientModInitializer {
     }
     private static CoreBallistics.Vec estimate(CoreBallistics.Vec now,Tracked prev,long at){
         if(prev==null||at<=prev.tick()||at-prev.tick()>5)return new CoreBallistics.Vec(0,0,0);
-        CoreBallistics.Vec v=now.minus(prev.center()).times(1.0/(at-prev.tick()));
-        return v.finite()&&v.length()<3.5?v:new CoreBallistics.Vec(0,0,0);
+        CoreBallistics.Vec raw=now.minus(prev.center()).times(1.0/(at-prev.tick()));
+        return TargetVelocityFilter.smooth(prev.filteredVelocity(),raw);
     }
     private static boolean eligible(LivingEntity entity){
         return switch(options.category()){
@@ -376,24 +515,33 @@ public final class LeadShot implements ClientModInitializer {
             int cx=w/2,cy=h/2;
             gfx.fill(cx-1,cy-1,cx+2,cy+2,guideOptions.tint(0xFFFFFFFF));
         }
-        if(options.guide()&&(!options.linked()||options.hud()))drawGuides(gfx,mc,w,h);
+        if(options.guide()&&(guideOptions.searchMode()==1||!options.linked()||options.hud())){
+            drawGuides(gfx,mc,w,h);
+            if(guideOptions.searchMode()==1)drawRadarMarker(gfx,mc,w,h);
+        }
         if(!options.hud())return;
+        if(guideOptions.hudStyle()==1 && w>=320 && h>=170){
+            drawFlightHud(gfx,mc,w,h);
+            return;
+        }
         int effectiveMode = h < 145 ? 0 : h < 205 ? Math.min(1, options.mode()) : options.mode();
-        int bottom=effectiveMode==0?48:effectiveMode==1?132:190;
+        int bottom=effectiveMode==0?48:effectiveMode==1?132:209;
         boolean showAssist=guideOptions.autoAim()||guideOptions.assistedFire();
         gfx.fill(4,4,Math.min(w-4,(int)(302*guideOptions.fontScale())),
                 Math.min(h-4,bottom+(showAssist?16:0)),0xB0101B28);
         line(gfx,mc,"LeadShot 26.3 | INTEGRATED ALPHA",8,8,0xFFD7EEFF);
         line(gfx,mc,"対象: "+categoryName()+" | "+(locked?"LOCK ":"AUTO ")
                 +(guideOptions.searchMode()==1?"RADAR ":"")+trim(preview.target(),17),8,22,0xFFFFFFFF);
+        if(guideOptions.searchMode()==1 && preview.solution()==null)
+            line(gfx,mc,"RADAR 候補: "+radarCount+" | "+(selected==null?"未選択":"選択済み"),8,50,0xFF89D9F6);
         if(showAssist){
             line(gfx,mc,"補助:"+(guideOptions.autoAim()?" AIM ON":" AIM OFF")
                     +(guideOptions.assistedFire()?" FIRE ON":""),8,Math.min(h-15,bottom),0xFF85CCEA);
         }
         if(effectiveMode==0)return;
         if(preview.solution()==null){
-            line(gfx,mc,preview.drawing()?"照準候補なし":
-                    (guideOptions.searchMode()==1 && selected!=null?"RADAR選択中: 弓を引いて予測":"弓を引いて観測"),
+            line(gfx,mc,preview.drawing()?"最大チャージ待機 / 照準候補なし":
+                    (guideOptions.searchMode()==1 && selected!=null?"RADARロック表示中: 最大チャージで予測":"最大チャージで予測"),
                     8,36,0xFFFFC97A);
         }
         else{
@@ -422,6 +570,10 @@ public final class LeadShot implements ClientModInitializer {
                 line(gfx,mc,"クライアント推定・命中確定ではありません",8,106,0xFFFFA6AA);
         }
         if(effectiveMode==2){
+            line(gfx,mc,"PRECOMP: "+PrecomputePolicy.name(guideOptions.computationMode())
+                    +" | STAGE "+STAGES.countAtStage(guideOptions.computationMode(),tick,
+                        depthHudTtl())+"/"+STAGES.size()+" | H "+WARM.hits()+" M "+WARM.misses(),
+                    8,193,0xFFA8E3FF);
             line(gfx,mc,options.shadowAudit()?"比較監査: ON (ログ匿名)":"比較監査: OFF",8,120,0xFFA9BACE);
             if(options.shadowAudit()){
                 MotionShadowAudit.RecentComparison c=SHADOW.recentComparison(10);
@@ -440,6 +592,141 @@ public final class LeadShot implements ClientModInitializer {
             }
         }
     }
+    /** Read-only flight-symbology presentation: telemetry already computed on client ticks. */
+    private static void drawFlightHud(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h){
+        int mode=FlightHudLayout.effectiveMode(options.mode(),h,guideOptions.fontScale(),options.shadowAudit());
+        FlightHudLayout.Layout layout=FlightHudLayout.calculate(w,h,mode,guideOptions.fontScale());
+        FlightHudLayout.Frame panel=layout.telemetry();
+        boolean blocked=preview.obstruction()!=null
+                &&preview.obstruction().state()==BallisticOcclusion.State.BLOCKED;
+        FlightHudTheme.State state=FlightHudTheme.state(readyState.ready(),blocked,
+                preview.solution()!=null,selected!=null,preview.drawing());
+        int stateColor=FlightHudTheme.color(state);
+        int row=Math.max(11,(int)Math.ceil(13*guideOptions.fontScale()));
+        int left=panel.x()+9, y=panel.y()+7;
+        flightPanel(gfx,panel,FlightHudTheme.CYAN);
+        hudPanelLine(gfx,mc,"LEADSHOT  //  FCS-42",left,y,FlightHudTheme.CYAN,panel);
+        y+=row;
+        hudPanelLine(gfx,mc,"TRACK  "+FlightHudTheme.lock(locked)+" / "+FlightHudTheme.radar(guideOptions.searchMode()),
+                left,y,FlightHudTheme.WHITE,panel);
+        y+=row;
+        hudPanelLine(gfx,mc,"TGT  "+trim(preview.target(),17),left,y,FlightHudTheme.WHITE,panel);
+        if(mode>=1 && preview.solution()!=null){
+            CoreBallistics.Solution shot=preview.solution();
+            y+=row;
+            hudPanelLine(gfx,mc,String.format(Locale.ROOT,"RNG %.1fm  /  TOF %.0ft",preview.range(),(double)shot.ticks()),
+                    left,y,FlightHudTheme.WHITE,panel);
+            y+=row;
+            hudPanelLine(gfx,mc,String.format(Locale.ROOT,"LEAD  Y%+.1f  P%+.1f",CoreBallistics.wrap(shot.yaw()-mc.player.getYRot()),
+                    shot.pitch()-mc.player.getXRot()),left,y,FlightHudTheme.CYAN,panel);
+            y+=row;
+            int votes=preview.consensus()==null?0:preview.consensus().supportingModels();
+            hudPanelLine(gfx,mc,"MODEL "+votes+"/3   /  "+(blocked?"BLOCKED":"ROUTE CHECK"),
+                    left,y,blocked?FlightHudTheme.RED:FlightHudTheme.AMBER,panel);
+        }else if(mode>=1){
+            y+=row;
+            hudPanelLine(gfx,mc,"FULL DRAW => FIRE SOLUTION",left,y,FlightHudTheme.AMBER,panel);
+        }
+        if(mode>=2){
+            y+=row;
+            hudPanelLine(gfx,mc,"PROCESS " + FlightHudTheme.computation(guideOptions.computationMode()),left,y,FlightHudTheme.MUTED,panel);
+            y+=row;
+            hudPanelLine(gfx,mc,"STAGE "+STAGES.countAtStage(guideOptions.computationMode(),tick,depthHudTtl())+
+                    "/"+STAGES.size()+"  / HIT "+WARM.hits()+" MISS "+WARM.misses(),
+                    left,y,FlightHudTheme.MUTED,panel);
+            if(options.shadowAudit()){
+                y+=row;
+                var arrow=ARROW_AUDIT.summary();
+                hudPanelLine(gfx,mc,"TELEM ARROW "+arrow.observedLaunches()+" / "+arrow.useEnds(),left,y,FlightHudTheme.MUTED,panel);
+            }
+        }
+        FlightHudLayout.Frame sys=layout.systems();
+        if(sys!=null){
+            flightPanel(gfx,sys,FlightHudTheme.CYAN);
+            int sx=sys.x()+8,sy=sys.y()+7;
+            hudPanelLine(gfx,mc,"WEAPON SYSTEM",sx,sy,FlightHudTheme.CYAN,sys);
+            sy+=row;
+            hudPanelLine(gfx,mc,"AIM  "+(guideOptions.autoAim()?"ON":"SAFE"),sx,sy,
+                    guideOptions.autoAim()?FlightHudTheme.GREEN:FlightHudTheme.MUTED,sys);
+            sy+=row;
+            hudPanelLine(gfx,mc,"FIRE "+(guideOptions.assistedFire()?"ON":"SAFE"),sx,sy,
+                    guideOptions.assistedFire()?FlightHudTheme.AMBER:FlightHudTheme.MUTED,sys);
+            sy+=row;
+            hudPanelLine(gfx,mc,"RADAR "+radarCount+" CONTACTS",sx,sy,FlightHudTheme.WHITE,sys);
+        }
+        // A compact cockpit cue below the sight line; center of screen remains uncluttered.
+        FlightHudLayout.Frame cue=layout.cue();
+        if(readyState.ready()||preview.solution()!=null||preview.drawing()||selected!=null){
+            gfx.fill(cue.x(),cue.y(),cue.x()+cue.width(),cue.y()+cue.height(),0xB5091620);
+            gfx.fill(cue.x(),cue.y(),cue.x()+3,cue.y()+cue.height(),stateColor);
+            String stateText=FlightHudTheme.cue(state);
+            String modeText=readyState.ready()?"  /  ESTIMATED ONLY":"  /  "+(locked?"STT":"SCAN");
+            hudPanelLine(gfx,mc,stateText+modeText,cue.x()+8,cue.y()+4,stateColor,cue);
+        }
+        // Charge stripe denotes bow draw duration only; NOT a computed hit probability.
+        if(mc.player.isUsingItem() && mc.player.getUseItem().getItem() instanceof BowItem){
+            double p=Math.max(0,Math.min(1,CoreBallistics.vanillaBowPower(mc.player.getTicksUsingItem())));
+            int barX=panel.x()+4,barY=panel.y()+panel.height()-5,barW=panel.width()-8;
+            gfx.fill(barX,barY,barX+barW,barY+2,0xAA284D55);
+            gfx.fill(barX,barY,barX+(int)Math.round(barW*p),barY+2,p>=.99?FlightHudTheme.GREEN:FlightHudTheme.CYAN);
+        }
+    }
+    /** Keep aircraft panel labels inside their assigned frame at 50–200% text sizes. */
+    private static void hudPanelLine(GuiGraphicsExtractor gfx,Minecraft mc,String text,int x,int y,int color,
+                                     FlightHudLayout.Frame frame){
+        if(frame==null || y+(int)Math.ceil(10*guideOptions.fontScale())>frame.y()+frame.height()-3)return;
+        text=FlightHudLayout.fitText(text,frame.x()+frame.width()-x-5,guideOptions.fontScale());
+        if(!text.isEmpty())line(gfx,mc,text,x,y,color);
+    }
+    private static void flightPanel(GuiGraphicsExtractor gfx,FlightHudLayout.Frame p,int accent){
+        int x=p.x(),y=p.y(),w=p.width(),h=p.height();
+        gfx.fill(x,y,x+w,y+h,FlightHudTheme.PANEL);
+        gfx.fill(x,y,x+w,y+1,FlightHudTheme.BORDER);
+        gfx.fill(x,y+1,x+1,y+h,FlightHudTheme.BORDER);
+        gfx.fill(x+w-1,y+1,x+w,y+h,FlightHudTheme.BORDER);
+        gfx.fill(x,y+h-1,x+w,y+h,FlightHudTheme.BORDER);
+        gfx.fill(x,y,x+30,y+2,accent);
+        gfx.fill(x,y,x+2,y+10,accent);
+        gfx.fill(x+w-30,y+h-2,x+w,y+h,accent);
+    }
+    private static void drawFlightReticle(GuiGraphicsExtractor gfx,int x,int y,int color){
+        // Four corner-coded 'diamond' strokes: crisp at any UI scale, no textures.
+        drawApproxLine(gfx,x,y-11,x+6,y-5,color);
+        drawApproxLine(gfx,x+6,y-5,x+11,y,color);
+        drawApproxLine(gfx,x+11,y,x+6,y+5,color);
+        drawApproxLine(gfx,x+6,y+5,x,y+11,color);
+        drawApproxLine(gfx,x,y+11,x-6,y+5,color);
+        drawApproxLine(gfx,x-6,y+5,x-11,y,color);
+        drawApproxLine(gfx,x-11,y,x-6,y-5,color);
+        drawApproxLine(gfx,x-6,y-5,x,y-11,color);
+        gfx.fill(x-1,y-1,x+2,y+2,color);
+    }
+    private static void drawRadarMarker(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h){
+        RadarMark mark=radarMark;
+        if(mark==null || mc.player==null)return;
+        AimProjection.Point p=AimProjection.world(vec(mc.player.getEyePosition()),mark.center(),
+                mc.player.getYRot(),mc.player.getXRot(),w,h,options.fov());
+        if(p==null)return;
+        int color=guideOptions.tint(mark.locked()?0xFF80F7C7:0xFF74C9FF);
+        if(!p.inFront()){
+            // Behind camera: no misleading front-screen marker.
+            line(gfx,mc,mark.locked()?"STT: TARGET AFT":"SCAN: TARGET AFT",w-142,16,color);
+            return;
+        }
+        int x=(int)Math.max(12,Math.min(w-12,Math.round(p.x())));
+        int y=(int)Math.max(16,Math.min(h-16,Math.round(p.y())));
+        int t=guideOptions.thickness();
+        // Corner bracket distinct from ballistic AIM/PRED.
+        for(int side=-1;side<=1;side+=2){
+            int px=x+side*13,py=y+side*13;
+            gfx.fill(px-5,py,px+6,py+t,color);
+            gfx.fill(px,py-5,px+t,py+6,color);
+        }
+        if(guideOptions.labels()){
+            String label=(guideOptions.hudStyle()==1?(mark.locked()?"STT ":"SCAN "):(mark.locked()?"LOCK ":"RADAR "))+trim(mark.name(),14);
+            line(gfx,mc,label,Math.max(2,Math.min(w-112,x+16)),Math.max(4,y-13),color);
+        }
+    }
     private static void drawGuides(GuiGraphicsExtractor gfx,Minecraft mc,int w,int h){
         if(preview.solution()!=null){
             var s=preview.solution();
@@ -451,11 +738,14 @@ public final class LeadShot implements ClientModInitializer {
                 // Blocked cannot be painted green; unchecked stays amber.
                 var confidence=ShotConfidence.classify(preview.collision(),preview.consensus(),preview.obstruction());
                 int guideColor=guideOptions.tint(aim.visible()?ShotConfidence.color(confidence):0xFFFFCB72);
-                if(readyState.ready() && guideOptions.cueMode()>0 && tick<=readyFlashUntil)
-                    guideColor=guideOptions.tint(0xFFFFFFFF);
-                drawCross(gfx,x,y,guideColor);
+                // While the strict readiness gate holds, the guide stays bright.
+                // The short sound still plays only on the false->true edge.
+                if(readyState.ready() && guideOptions.cueMode()>0)
+                    guideColor=guideOptions.tint(0xFF70FFB0);
+                if(guideOptions.hudStyle()==1)drawFlightReticle(gfx,x,y,guideColor);
+                else drawCross(gfx,x,y,guideColor);
                 if(aim.visible()&&guideOptions.labels())
-                    line(gfx,mc,readyState.ready()&&guideOptions.cueMode()>0?"READY":"AIM",x+10,y-4,guideColor);
+                    line(gfx,mc,readyState.ready()&&guideOptions.cueMode()>0?"READY":(guideOptions.hudStyle()==1?"LEAD [AIM]":"AIM"),x+13,y-4,guideColor);
                 // World-space rings are projected to the HUD. This is NOT depth-tested.
                 for(var edge:ProjectedAimRings.aimRing(guide.eye(),guide.yaw(),guide.pitch(),
                         mc.player.getYRot(),mc.player.getXRot(),w,h,options.fov(),10)) {
@@ -468,7 +758,7 @@ public final class LeadShot implements ClientModInitializer {
                 int x=(int)Math.round(future.x()),y=(int)Math.round(future.y());
                 gfx.fill(x-5,y-5,x+6,y-4,guideOptions.tint(0xFF62D9FC));gfx.fill(x-5,y+5,x+6,y+6,guideOptions.tint(0xFF62D9FC));
                 gfx.fill(x-5,y-4,x-4,y+5,guideOptions.tint(0xFF62D9FC));gfx.fill(x+5,y-4,x+6,y+5,guideOptions.tint(0xFF62D9FC));
-                if(future.visible()&&guideOptions.labels())line(gfx,mc,"PRED",x+10,y-4,guideOptions.tint(0xFF62D9FC));
+                if(future.visible()&&guideOptions.labels())line(gfx,mc,guideOptions.hudStyle()==1?"INTERCEPT [PRED]":"PRED",x+10,y-4,guideOptions.tint(0xFF62D9FC));
                 if(preview.half()!=null){
                     double ringRadius=Math.max(.17,Math.min(1.0,
                             Math.max(preview.half().x(),preview.half().y())));
@@ -498,13 +788,19 @@ public final class LeadShot implements ClientModInitializer {
             line(gfx,mc,"TEST ONLY",Math.min(w-62,w/2+12),h/2-4,0xFF62D9FC);
         }
     }
-    /** Bounded 2D line extraction; at most 48 rectangles per edge. */
+    /** Clip to GUI bounds first; horizontal/vertical strokes collapse to a single quad. */
     private static void drawApproxLine(GuiGraphicsExtractor g,int x0,int y0,int x1,int y1,int rgb){
+        ScreenLineClipper.Segment seg=ScreenLineClipper.clip(x0,y0,x1,y1,g.guiWidth(),g.guiHeight());
+        if(seg==null)return;
+        x0=seg.x0();y0=seg.y0();x1=seg.x1();y1=seg.y1();
+        int t=guideOptions.thickness();
+        if(y0==y1){g.fill(Math.min(x0,x1),y0,Math.max(x0,x1)+t,y0+t,rgb);return;}
+        if(x0==x1){g.fill(x0,Math.min(y0,y1),x0+t,Math.max(y0,y1)+t,rgb);return;}
         int segments=Math.min(48,Math.max(1,Math.max(Math.abs(x1-x0),Math.abs(y1-y0))));
         for(int i=0;i<=segments;i++){
             int x=(int)Math.round(x0+(x1-x0)*i/(double)segments);
             int y=(int)Math.round(y0+(y1-y0)*i/(double)segments);
-            g.fill(x,y,x+guideOptions.thickness(),y+guideOptions.thickness(),rgb);
+            g.fill(x,y,x+t,y+t,rgb);
         }
     }
     private static void drawCross(GuiGraphicsExtractor g,int x,int y,int color){
@@ -514,6 +810,9 @@ public final class LeadShot implements ClientModInitializer {
     }
     private static void line(GuiGraphicsExtractor gfx,Minecraft mc,String text,int x,int y,int color){
         double scale=guideOptions.fontScale();
+        // Bound projected labels and large-font telemetry to the GUI viewport.
+        text=FlightHudLayout.fitText(text,gfx.guiWidth()-Math.max(0,x)-3,scale);
+        if(text.isEmpty())return;
         if(scale==1.0){gfx.text(mc.font,text,x,y,color,true);return;}
         gfx.pose().pushMatrix();
         try{
@@ -529,26 +828,83 @@ public final class LeadShot implements ClientModInitializer {
     public static LeadShotOptions options(){return options;}
     public static GuideControls guideControls(){return guideOptions;}
     public static String lockStatus(){return locked?"手動ロック":"自動選択";}
+    /** Legacy one-click actions, now immutable and guaranteed to preserve unrelated options. */
     public static void changeGuide(String action){
         GuideControls g=guideOptions;
         guideOptions=switch(action){
-            case "radius"->new GuideControls(g.radiusDegrees()>=54?8:g.radiusDegrees()+4,g.depthBlocks(),g.thickness(),g.opacity(),g.color(),g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "depth"->new GuideControls(g.radiusDegrees(),g.depthBlocks()>=64?8:g.depthBlocks()+8,g.thickness(),g.opacity(),g.color(),g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "thickness"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness()%5+1,g.opacity(),g.color(),g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "opacity"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity()>=250?75:g.opacity()+25,g.color(),g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "color"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),(g.color()+1)%4,g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "dot"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),g.color(),!g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "labels"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),g.color(),g.centerDot(),!g.labels(),g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "los"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),g.color(),g.centerDot(),g.labels(),!g.lineOfSightOnly(),g.manualLock(),g.smoothing(),g.textSize(),g.cueMode(),g.searchMode());
-            case "smoothing"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),g.color(),g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),(g.smoothing()+1)%4,g.textSize(),g.cueMode(),g.searchMode());
-            case "textsize"->g.withExtra((g.textSize()+1)%4,g.cueMode(),g.searchMode());
-            case "cue"->g.withExtra(g.textSize(),(g.cueMode()+1)%3,g.searchMode());
-            case "searchmode"->g.withExtra(g.textSize(),g.cueMode(),(g.searchMode()+1)%2);
+            case "radius"->g.withNumeric(FineTuneParameter.SCAN_CONE,g.radiusDegrees()+5);
+            case "depth"->g.withNumeric(FineTuneParameter.SENSOR_RANGE,g.depthBlocks()+16);
+            case "thickness"->g.withNumeric(FineTuneParameter.RETICLE_WEIGHT,g.thickness()+1);
+            case "opacity"->g.withNumeric(FineTuneParameter.HUD_ALPHA,g.opacity()+25);
+            case "color"->new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),
+                    (g.color()+1)%4,g.centerDot(),g.labels(),g.lineOfSightOnly(),g.manualLock(),
+                    g.smoothing(),g.textSize(),g.cueMode(),g.searchMode(),g.autoAim(),g.assistedFire(),
+                    g.assistSpeed(),g.computationMode(),g.hudStyle(),g.fontPercent(),g.aimRateTenths());
+            case "dot"->guideToggle(g,"dot");
+            case "labels"->guideToggle(g,"labels");
+            case "los"->guideToggle(g,"los");
+            case "smoothing"->guideToggle(g,"smoothing");
+            case "textsize"->g.withNumeric(FineTuneParameter.LABEL_SCALE,g.fontPercent()+10);
+            case "cue"->guideToggle(g,"cue");
+            case "searchmode"->guideToggle(g,"searchmode");
             case "autoaim"->g.withAssist(!g.autoAim(),g.assistedFire(),g.assistSpeed());
             case "autofire"->g.withAssist(g.autoAim(),!g.assistedFire(),g.assistSpeed());
-            case "aimspeed"->g.withAssist(g.autoAim(),g.assistedFire(),g.assistSpeed()%4+1);
+            case "aimspeed"->g.withNumeric(FineTuneParameter.AIM_RATE,g.aimRateTenths()+5);
+            case "compute"->g.withComputation((g.computationMode()+1)%4);
+            case "hudstyle"->g.withHudStyle((g.hudStyle()+1)%2);
             default->g;
         };
+        if(action.equals("compute")||action.equals("searchmode")||action.equals("depth")||action.equals("radius")||action.equals("los")){
+            WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();
+        }
+        saveGuides();
+    }
+    private static GuideControls guideToggle(GuideControls g,String key){
+        return new GuideControls(g.radiusDegrees(),g.depthBlocks(),g.thickness(),g.opacity(),g.color(),
+                key.equals("dot")?!g.centerDot():g.centerDot(),
+                key.equals("labels")?!g.labels():g.labels(),
+                key.equals("los")?!g.lineOfSightOnly():g.lineOfSightOnly(),
+                g.manualLock(),key.equals("smoothing")?(g.smoothing()+1)%4:g.smoothing(),
+                g.textSize(),key.equals("cue")?(g.cueMode()+1)%3:g.cueMode(),
+                key.equals("searchmode")?(g.searchMode()+1)%2:g.searchMode(),
+                g.autoAim(),g.assistedFire(),g.assistSpeed(),g.computationMode(),g.hudStyle(),
+                g.fontPercent(),g.aimRateTenths());
+    }
+    /** Called only by the dedicated numeric editor after user presses APPLY. */
+    public static int fineTuneValue(FineTuneParameter key){
+        GuideControls g=guideOptions;
+        return switch(key){
+            case SCAN_CONE->g.radiusDegrees();
+            case SENSOR_RANGE->g.depthBlocks();
+            case RETICLE_WEIGHT->g.thickness();
+            case HUD_ALPHA->g.opacity();
+            case LABEL_SCALE->g.fontPercent();
+            case AIM_RATE->g.aimRateTenths();
+            case CAMERA_FOV->options.fov();
+        };
+    }
+    public static void setFineTune(FineTuneParameter key,int raw){
+        int v=key.clamp(raw);
+        if(key==FineTuneParameter.CAMERA_FOV){
+            LeadShotOptions o=options;
+            options=new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),
+                    o.calibration(),o.shadowAudit(),o.category(),o.mode(),v,o.blockCheck());
+            try{options.write(CONFIG);}catch(Exception e){System.err.println("[LeadShot] fov save: "+e);}
+        }else{
+            guideOptions=guideOptions.withNumeric(key,v);
+            if(key==FineTuneParameter.SCAN_CONE||key==FineTuneParameter.SENSOR_RANGE){
+                WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();
+            }
+            saveGuides();
+        }
+    }
+    private static int depthHudTtl(){return PrecomputePolicy.plan(guideOptions.computationMode()).cacheTtlTicks();}
+    /** Cosmetic only: never changes automation, target filters or performance budgets. */
+    public static void applyVisualPreset(int preset){
+        guideOptions=guideOptions.visualPreset(preset);
+        saveGuides();
+    }
+    private static void saveGuides(){
         try{guideOptions.save(GUIDE_CONFIG);}catch(Exception e){System.err.println("[LeadShot] guide write: "+e);}
     }
     public static String currentCategory(){return categoryName();}
@@ -564,11 +920,11 @@ public final class LeadShot implements ClientModInitializer {
             case "shadow"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),!o.shadowAudit(),o.category(),o.mode(),o.fov(),o.blockCheck());
             case "target"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),o.shadowAudit(),(o.category()+1)%3,o.mode(),o.fov(),o.blockCheck());
             case "mode"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),o.shadowAudit(),o.category(),(o.mode()+1)%3,o.fov(),o.blockCheck());
-            case "fov"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),o.shadowAudit(),o.category(),o.mode(),o.fov()>=100?60:o.fov()+10,o.blockCheck());
+            case "fov"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),o.shadowAudit(),o.category(),o.mode(),o.fov()>=110?50:o.fov()+1,o.blockCheck());
             case "blockcheck"->new LeadShotOptions(o.hud(),o.guide(),o.trajectory(),o.preview(),o.linked(),o.calibration(),o.shadowAudit(),o.category(),o.mode(),o.fov(),!o.blockCheck());
             default->o;
         };
-        if(action.equals("target")){SMOOTHER.reset();selected=null;observations.clear();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();}
+        if(action.equals("target")){SMOOTHER.reset();selected=null;observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();}
         if(action.equals("shadow")){SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();}
         try{options.write(CONFIG);}catch(Exception ex){System.err.println("[LeadShot] config save: "+ex);}
     }

@@ -10,5 +10,6 @@
   "key.leadshot.lock_next": "Next locked target",
   "key.leadshot.lock_clear": "Clear target lock",
   "key.leadshot.aim_assist": "Toggle locked-target aim assist",
-  "key.leadshot.assisted_fire": "Assisted bow release (middle click)"
+  "key.leadshot.assisted_fire": "Assisted bow release (middle click)",
+  "key.leadshot.hud_style": "Cycle HUD style (Classic/Tactical)"
 }

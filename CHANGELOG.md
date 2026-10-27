@@ -1,20 +1,76 @@
-# LeadShot changelog
+# v0.41.0-alpha.1 — Reliability & Performance Audit
 
-## v0.36.0-alpha.1 (2026-10-27)
+- 固定係数の事前計算により、全弾道逆算候補の`Math.pow`繰り返し処理を削減。
+- 追跡が64体に達してもロックした生存対象を追跡対象に残す`TrackingBudget`を追加。
+- ロック維持と表示状態を分離し、遮蔽等で予測不能な場合の古いレーダーマーカーを消去。
+- 画面の高さと文字倍率に基づきTACTICALの詳細度を自動調整。パネル文字のはみ出しを省略。
+- 数値の詳細編集画面を狭いGUIへ適応させ、ガイド設定保存を原子的置換（可能な環境）に変更。
+- 追加4系列921,258チェック、新旧弾道モデルの数値比較、従来回帰全成功。実Fabric 26.3のコンパイル・実機動作は未確認。
 
-- Added opt-in **locked-target aim assist**. While using a bow, with a valid manually locked target, a checked clear projectile route, enabled line-of-sight filtering, and consistent model status, adjust yaw/pitch toward the predicted solution by at most 1–4 degrees each client tick. Defaults OFF. No mouse input emulation or world-facing overlay.
-- Added opt-in **assisted single-shot release** (right mouse button held + middle mouse press, Minecraft keybinding remappable). Requires manual lock, hostile mob target, drawn bow, clear inspected trajectory, line-of-sight filtering, and stable READY status. Defaults OFF. One action per click, 12-tick minimum spacing, no queued shots or repeat firing; no automatic firing at players.
-- Added seventh settings page and J key for toggling aim assist; settings are persisted in the existing guide properties file, preserving old config compatibility.
-- Added pure-math aim controller with wrapped yaw and maximum angular velocity, and pure release safety gate.
-- Expanded local regressions for angular velocity, input/release gate truth table, and persistence. Mock Fabric API signature compilation passed; **not tested against real Fabric 26.3**.
-- Source and root-upload bundles are supplied. No compiled Minecraft 26.3 JAR exists for v0.36 at this stage.
+# Changelog
 
-## Earlier releases
+## v0.40.0-alpha.1 — Precision Controls
 
-v0.35: READY notification, configurable text scale, CENTER/RADAR selection, lock stability.
+- Oキー設定を改善し、前後のページへ直接移動可能に。
+- 7つの数値項目に専用編集画面。少量/大量の増減、直接整数入力、個別初期値、適用/キャンセル、入力検証と上限下限表示。
+- 索敵角4〜85°、距離8〜128m、線1〜8px、透明度0〜255、文字倍率50〜200%、自動照準0.1〜12.0°/tick、投影FOV50〜110°を精密設定。
+- 標準/最小/高視認性の3プリセット。自動照準と連続発射を勝手にONにしない。
+- v0.39より前の設定形式からfontPercentとaimRateTenthsへの移行。編集していない設定の意図しないリセットを防止。
+- `FineTuneV40Test`: 10,478 assertions and earlier test suite passed; synthetic Minecraft API compilation passed.
+- **Java25 / real Minecraft 26.3 Fabric build and in-game interaction are NOT verified.**
 
-v0.34: frame-time guide smoothing.
 
-v0.33: occlusion-aware target acquisition, aim decoration and guide settings.
+## v0.39.0-alpha.1
+- TACTICAL / CLASSIC の2種類のHUD表示。TACTICALを初期値とし、Hキーまたは設定9ページ目で切替。
+- 戦闘機風の火器管制パネル、LEAD記号、STT LOCK、FIRE CUE、レーダー接触表示、チャージバー。
+- 画面サイズに合わせたレスポンシブ配置。小さい画面では簡易表示、極小画面ではCLASSICにフォールバック。
+- 新たな表示設定`hudStyle`を保存し、旧設定および既存の自動照準・事前計算設定を維持。
+- 画面外ガイド線のカリングと水平／垂直線の単一矩形化で、描画時の不要な矩形数を削減。
+- FlightHudV39Test / ScreenLineClipperTest を追加。模擬APIコンパイルと旧回帰テスト通過。
+- 実Fabric 26.3 / Java 25でのコンパイル・ゲーム内検証は未実施。
 
-v0.32: first real compiled LeadShot Fabric 26.3 JAR (after key mapping/hideGui fixes).
+
+## v0.39.0-alpha.1
+- TACTICAL / CLASSIC の2種類のHUD表示。TACTICALを初期値とし、Hキーまたは設定9ページ目で切替。
+- 戦闘機風の火器管制パネル、LEAD記号、STT LOCK、FIRE CUE、レーダー接触表示、チャージバー。
+- 画面サイズに合わせたレスポンシブ配置。小さい画面では簡易表示、極小画面ではCLASSICにフォールバック。
+- 新たな表示設定`hudStyle`を保存し、旧設定および既存の自動照準・事前計算設定を維持。
+- 画面外ガイド線のカリングと水平／垂直線の単一矩形化で、描画時の不要な矩形数を削減。
+- FlightHudV39Test / ScreenLineClipperTest を追加。模擬APIコンパイルと旧回帰テスト通過。
+- 実Fabric 26.3 / Java 25でのコンパイル・ゲーム内検証は未実施。
+
+
+## v0.39.0-alpha.1
+- TACTICAL / CLASSIC の2種類のHUD表示。TACTICALを初期値とし、Hキーまたは設定9ページ目で切替。
+- 戦闘機風の火器管制パネル、LEAD記号、STT LOCK、FIRE CUE、レーダー接触表示、チャージバー。
+- 画面サイズに合わせたレスポンシブ配置。小さい画面では簡易表示、極小画面ではCLASSICにフォールバック。
+- 新たな表示設定`hudStyle`を保存し、旧設定および既存の自動照準・事前計算設定を維持。
+- 画面外ガイド線のカリングと水平／垂直線の単一矩形化で、描画時の不要な矩形数を削減。
+- FlightHudV39Test / ScreenLineClipperTest を追加。模擬APIコンパイルと旧回帰テスト通過。
+- 実Fabric 26.3 / Java 25でのコンパイル・ゲーム内検証は未実施。
+
+
+## v0.38.0-alpha.1
+- CENTER/RADARと独立した LOW / DEFAULT / HIGH / ALL の4段階計算設定（8ページ目）
+- 全モードで設定カテゴリの近隣モブを軽量追跡（クライアントtickごと、最大64体）
+- full-drawを前提に最大64体の弾道解を事前計算するキャッシュを追加
+- キャッシュの入力移動・有効期限・死亡対象・設定変更に対応した失効
+- 詳細な移動当たり判定を全候補から選択1体のみに絞る最適化
+- READYと補助発射の判定は最新tickの精密解で再評価（キャッシュでは発射を許可しない）
+- ANALYSIS HUDで計算モード・キャッシュ件数・ヒット/ミスを表示
+- FullDrawWarmCacheTest 1035アサーション、GuideControlsV38Test 19アサーション通過
+
+## v0.37.0-alpha.1
+- 最大チャージを用いた弾道計算、RADARの常時ロック表示、死亡時の即時ターゲット引継ぎ
+- CENTER/RADAR両モードでの照準補助、右＋左クリック保持によるREADY時の繰り返し発射補助
+- 偏差速度フィルタと、サイズ・距離・速度に応じたREADY許容角度
+
+## v0.42.0-alpha.1 — 統一64体の処理深度モード
+
+- 全モードの追跡枠を64体で統一し、LOW / DEFAULT / HIGH / ALLを計算対象数ではなく処理**深度**で区別。
+- DEFAULTは64体全員の5/10/20tick簡易移動予測を常時計算し、画面中央の候補の優先度にも5tick予測を活用。
+- HIGHは全64体を対象にフルチャージ弾道を8体/tick、ALLは追加でAABB衝突・ブロック経路・3モデルを4体/tickで巡回先行検査。
+- LOWでも最大チャージ時に選択対象への精密再計算は維持。最大チャージ後の候補確認数は全モード固定12体。
+- ラウンドロビン巡回、対象移動・削除時のキャッシュ無効化、PROCESSOR画面の表記更新と新しい深度カウンターを追加。
+- 既存`computationMode`設定値0..3との互換性を維持。
+- 新しい`PrecomputeDepthV42Test`等で構成を検査。実Fabric 26.3での本ビルド、実機パフォーマンスは未検証。

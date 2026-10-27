@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "leadshot",
   "version": "${version}",
-  "name": "LeadShot 26.3 alpha (smooth ballistic HUD and opt-in locked-target assist)",
-  "description": "Client-side experimental bow ballistic HUD, visibility-aware lock selection, bounded aim assist and click-gated release.",
+  "name": "LeadShot // FCS-42 Depth Processor",
+  "description": "Client-only bow guidance, FCS tactical HUD, radar, full-draw ballistic prediction, precision numeric tuning, 64-entity precompute depth modes, robust target lock selection, and optional assisted fire.",
   "authors": [
     "LeadShot project"
   ],

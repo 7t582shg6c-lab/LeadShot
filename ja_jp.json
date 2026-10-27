@@ -10,5 +10,6 @@
   "key.leadshot.lock_next": "次の照準対象",
   "key.leadshot.lock_clear": "ロック解除",
   "key.leadshot.aim_assist": "ロック中の自動照準補助切替",
-  "key.leadshot.assisted_fire": "補助発射（弓使用中の中クリック）"
+  "key.leadshot.assisted_fire": "補助発射（弓使用中の中クリック）",
+  "key.leadshot.hud_style": "HUD外観切替 (CLASSIC/TACTICAL)"
 }

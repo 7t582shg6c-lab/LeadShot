@@ -14,9 +14,17 @@ public final class AimReadySignal {
 
     public State update(UUID target,long tick,double yawError,double pitchError,
                         ShotConfidence.Status confidence,boolean charged){
+        return update(target,tick,yawError,pitchError,confidence,charged,1.25,1.25);
+    }
+    /** Use caller-provided target-sized angular tolerance for v0.37 accuracy. */
+    public State update(UUID target,long tick,double yawError,double pitchError,
+                        ShotConfidence.Status confidence,boolean charged,
+                        double maxYaw,double maxPitch){
         if(target==null||!charged||confidence!=ShotConfidence.Status.CONSISTENT_ESTIMATE
+                ||!Double.isFinite(maxYaw)||!Double.isFinite(maxPitch)
+                ||maxYaw<=0||maxPitch<=0
                 ||!Double.isFinite(yawError)||!Double.isFinite(pitchError)
-                ||Math.abs(yawError)>1.25||Math.abs(pitchError)>1.25){
+                ||Math.abs(yawError)>maxYaw||Math.abs(pitchError)>maxPitch){
             held=0;wasReady=false;lastTarget=target;
             return new State(false,false,0);
         }

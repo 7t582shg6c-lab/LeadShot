@@ -1,11 +1,10 @@
-# LeadShot v0.36.0 integration status
+# LeadShot v0.42 統合状況
 
-- Version: 0.36.0-alpha.1
-- Source: all v0.35 code + new aim assist, release gate, UI/settings and tests.
-- Local independent regression suite: PASSED (log: `LeadShot_v0.36.0_tests.log`).
-- Local synthetic Minecraft API javac: PASSED. This does **not** establish real Minecraft compilation or runtime behavior.
-- GitHub repository changes: NOT COMMITTED; GitHub connector returned HTTP 403 for contents write. User upload needed.
-- Java runtime here: JDK 21; real Minecraft 26.3/Fabric build needs JDK 25, therefore NOT BUILT.
-- v0.36 JAR: NOT GENERATED / NOT VERIFIED.
-- Backward-compatible guide config read/write. New assist toggles default OFF.
-- Auto aim and click-fired releases must be confirmed in a dedicated single-player test world before wider use.
+- Java 21の数値単体・回帰テスト: **PASS**。
+- 模擬Minecraft/Fabric署名によるJavaコンパイル: **PASS（実APIではない）**。
+- 4モードの共通64体追跡・計算深度・巡回公平性・無効化テスト: **PASS**。
+- 本物のFabric 26.3 / Java 25 / Loomでのビルド: **未実施**。
+- Minecraft内のFPS、敵対Mob移動時のガイド精度、ALLの負荷、連続発射の再チャージ: **未検証**。
+- GitHub上のバージョン: このZIP作成時点で更新していません（リポジトリへの直接書き込み権限なし）。
+
+ソースは旧版のv0.41を土台に、共通の64体追跡から計算段階を進める方式へ変更。発射判断はキャッシュされた精密情報を利用しません。

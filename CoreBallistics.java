@@ -6,6 +6,17 @@ public final class CoreBallistics {
     public static final double DRAG=.99, GRAVITY=.05;
     public static final double FULL_BOW_SPEED=3.0;
     public static final int MAX_TICKS=80;
+    /** Precomputed displacement/drop coefficients, identical recurrence to the discrete arrow model.
+     * A solution searches up to 79 flight times; the constants need not be recomputed per mob.
+     */
+    private static final double[] FLIGHT_SUM = new double[MAX_TICKS + 1];
+    private static final double[] FLIGHT_DROP = new double[MAX_TICKS + 1];
+    static {
+        for (int n = 1; n <= MAX_TICKS; n++) {
+            FLIGHT_DROP[n] = FLIGHT_DROP[n - 1] + GRAVITY * FLIGHT_SUM[n - 1];
+            FLIGHT_SUM[n] = 1.0 + DRAG * FLIGHT_SUM[n - 1];
+        }
+    }
     public record Vec(double x,double y,double z) {
         public Vec add(Vec b){return new Vec(x+b.x,y+b.y,z+b.z);}
         public Vec minus(Vec b){return new Vec(x-b.x,y-b.y,z-b.z);}
@@ -39,8 +50,8 @@ public final class CoreBallistics {
            !Double.isFinite(speed)||speed<=0)return null;
         Solution best=null;
         for(int n=2;n<=MAX_TICKS;n++){
-            double s=(1-Math.pow(DRAG,n))/(1-DRAG);
-            double fall=GRAVITY*(n-s)/(1-DRAG);
+            double s=FLIGHT_SUM[n];
+            double fall=FLIGHT_DROP[n];
             Vec future=center.add(velocity.times(n));
             Vec v=future.minus(eye).add(new Vec(0,fall,0)).times(1/s).minus(shooterVelocity);
             double mismatch=Math.abs(v.length()-speed);
