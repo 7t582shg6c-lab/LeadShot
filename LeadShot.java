@@ -126,6 +126,8 @@ public final class LeadShot implements ClientModInitializer {
                 .resolve("leadshot-intercept-v051.properties"));
         FutureAimV514.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
                 .resolve("leadshot-future-aim-v0514.properties"));
+        PreReadyAimV515.INSTANCE.readConfiguration(FabricLoader.getInstance().getConfigDir()
+                .resolve("leadshot-preaim-v0515.properties"));
         for(KeyMapping k:List.of(HUD,PREVIEW,TARGET,MARKERS,MODES,SETTINGS,LOCK_MODE,LOCK_NEXT,LOCK_CLEAR,AIM_ASSIST,HUD_STYLE))
             KeyMappingHelper.registerKeyMapping(k);
         ClientTickEvents.END_CLIENT_TICK.register(LeadShot::onTick);
@@ -135,7 +137,7 @@ public final class LeadShot implements ClientModInitializer {
     private static void onTick(Minecraft mc){
         tick++;
         worldGuide = WorldGuideGeometry.Frame.empty();
-        if(mc.level!=lastLevel){InterceptWindowV51.INSTANCE.reset();AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
+        if(mc.level!=lastLevel){PreReadyAimV515.INSTANCE.reset();InterceptWindowV51.INSTANCE.reset();AdaptiveLeadV49.INSTANCE.resetWorld(mc.level);SharedObservationV484.INSTANCE.resetWorld(mc.level);lastLevel=mc.level;LOS_CACHE.reset();observations.clear();WARM.clear();STAGES.clear();PRECOMPUTE_ORDER.reset();SHADOW.clear();RELEASE_AUDIT.clear();ARROW_AUDIT.clear();previousBowUse=false;selected=null;locked=false;nextLockRequested=false;preview=Preview.empty();radarMark=null;radarCount=0;SMOOTHER.reset();READY.reset();readyState=new AimReadySignal.State(false,false,0);readyFlashUntil=-1;RELEASE_GATE.reset();AIM_SYNC.reset();RETARGET.reset();scanContacts=List.of();lastUseAttemptTick=Long.MIN_VALUE;}
         while(HUD.consumeClick())if(mc.gui.screen()==null)mutate("hud");
         while(PREVIEW.consumeClick())if(mc.gui.screen()==null)mutate("preview");
         while(TARGET.consumeClick())if(mc.gui.screen()==null)mutate("target");
@@ -540,8 +542,19 @@ public final class LeadShot implements ClientModInitializer {
             FutureAimV514.Goal aimingGoal=FutureAimV514.INSTANCE.guide(
                     selected,tick,heldForFutureAim,playerRetargeting,shooter.isFallFlying(),
                     chosen.shot(),InterceptWindowV51.INSTANCE.futureGuide(selected,tick));
+            // v0.51.5: pre-READY one-tick lead, only for the currently selected
+            // target while drawing the bow. Never overrides a verified v0.51.4
+            // hint, the player's manual retargeting, or any current firing gate.
+            PreReadyAimV515.Goal earlyGoal=PreReadyAimV515.INSTANCE.guide(
+                    selected,tick,bow && shooter.getTicksUsingItem()>=6,
+                    playerRetargeting,shooter.isFallFlying(),!chosen.entity().onGround(),
+                    readyState.ready(),shooter.getYRot(),shooter.getXRot(),
+                    chosen.shot(),launchOrigin,shootVelocity,chosen.center(),
+                    chosen.velocity(),adaptiveTargetPath);
+            double goalYaw=aimingGoal.applied()?aimingGoal.yaw():earlyGoal.yaw();
+            double goalPitch=aimingGoal.applied()?aimingGoal.pitch():earlyGoal.pitch();
             AimAssistController.Step move=AimAssistController.step(shooter.getYRot(),shooter.getXRot(),
-                    aimingGoal.yaw(),aimingGoal.pitch(),guideOptions.aimRateTenths()/10.0,true);
+                    goalYaw,goalPitch,guideOptions.aimRateTenths()/10.0,true);
             if(move.moved()){
                 // v0.50: gliding camera movements affect the player's own
                 // flight path. Compare short predicted paths and bound the
