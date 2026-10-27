@@ -1,0 +1,9 @@
+{
+  "key.category.leadshot.main": "LeadShot",
+  "key.leadshot.hud_visibility": "Toggle HUD",
+  "key.leadshot.preview": "Toggle bow preview",
+  "key.leadshot.cycle_target": "Cycle target category",
+  "key.leadshot.settings": "LeadShot settings",
+  "key.leadshot.hud_mode": "Change HUD mode",
+  "key.leadshot.markers": "Toggle aim guides"
+}

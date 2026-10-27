@@ -1,0 +1,9 @@
+{
+  "key.category.leadshot.main": "LeadShot",
+  "key.leadshot.hud_visibility": "HUD表示の切替",
+  "key.leadshot.preview": "弓予測の切替",
+  "key.leadshot.cycle_target": "対象カテゴリの切替",
+  "key.leadshot.settings": "LeadShot設定画面",
+  "key.leadshot.hud_mode": "HUDモード切替",
+  "key.leadshot.markers": "照準ガイド切替"
+}
