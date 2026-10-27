@@ -15,7 +15,6 @@ import java.nio.file.Path;
 import java.util.Locale;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.UUID;
 import java.util.Properties;
 
@@ -30,6 +29,12 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
     // Independent opt-in diagnostics: mirrors the 64 contact cap but does not
     // change LeadShot's original targeting or self-reported READY state.
     private final TrackRepositoryV481 tracks=new TrackRepositoryV481();
+    private static final ObservationBusV483 OBSERVATION_BUS=new ObservationBusV483();
+    /** Read-only latest immutable frame for later integration with LeadShot's aim tracker.
+     * Consumer must validate epoch, tick and maxAge (sampling occurs on an event). */
+    public static ObservationBusV483.Frame latestObservedFrame(){
+        return OBSERVATION_BUS.latest();
+    }
     private long worldEpoch;
     private Object lastWorld;
     private long tick;
@@ -37,7 +42,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
     @Override public void onInitializeClient(){
         enabled=readEnabled();
         ClientTickEvents.END_CLIENT_TICK.register(this::sample);
-        System.out.println("[LeadShot v0.48.2] 飛行物理・時刻付き64体追跡・運動モデル適応の診断="+(enabled?"有効":"無効")+
+        System.out.println("[LeadShot v0.48.3] 飛行物理・共有観測フレーム・運動モデル適応の診断="+(enabled?"有効":"無効")+
                 " (config/leadshot-flight-shadow.properties)");
     }
     private static boolean readEnabled(){
@@ -51,6 +56,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
         tick++;
         if(lastWorld!=mc.level){
             lastWorld=mc.level;worldEpoch++;measurements.clear();tracks.reset(worldEpoch);
+            OBSERVATION_BUS.clear();
         }
         if(!enabled || mc.level==null || mc.player==null)return;
         var shooter=mc.player;
@@ -61,21 +67,23 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
                 e->e!=shooter && e.isAlive() && !e.isSpectator());
         candidates.sort(Comparator.comparingDouble(shooter::distanceToSqr));
         int contactCount=Math.min(TrackRepositoryV481.MAX_CONTACTS,candidates.size());
-        var active=new HashSet<UUID>(contactCount);
+        var frame=new ArrayList<TimedObservationV48>(contactCount);
         for(int i=0;i<contactCount;i++){
             var entity=candidates.get(i);
             var box=entity.getBoundingBox();
             var center=box.getCenter();
             var speed=entity.getDeltaMovement();
             UUID id=entity.getUUID();
-            active.add(id);
-            tracks.observe(new TimedObservationV48(id,worldEpoch,tick,
+            frame.add(new TimedObservationV48(id,worldEpoch,tick,
                     new CoreBallistics.Vec(center.x,center.y,center.z),
                     new CoreBallistics.Vec(speed.x,speed.y,speed.z),
                     new CoreBallistics.Vec(box.getXsize()*.5,box.getYsize()*.5,box.getZsize()*.5),
                     !entity.onGround()));
         }
-        tracks.retain(worldEpoch,tick,active);
+        // Create a single immutable snapshot; all downstream diagnostic consumers
+        // receive the SAME position, box and timestamp for this client tick.
+        if(OBSERVATION_BUS.publish(worldEpoch,tick,frame))
+            tracks.observeFrame(OBSERVATION_BUS.latest());
         var arrows=mc.level.getEntitiesOfClass(AbstractArrow.class,
                 shooter.getBoundingBox().inflate(96),
                 arrow -> arrow.getOwner()==shooter && !(arrow instanceof ThrownTrident));
@@ -95,7 +103,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
             var ca=motion.models().get(MotionForecastV481.Model.DAMPED_ACCELERATION);
             var turn=motion.models().get(MotionForecastV481.Model.DAMPED_TURN);
             System.out.printf(Locale.ROOT,
-                    "[LeadShot v0.48.2] 追跡体数=%d, 予測評価=%d, CV-RMS=%.3f, CA-RMS=%.3f, TURN-RMS=%.3f, 急機動=%d, 補正/転送=%d, 欠測=%d (観測のみ、命中予測には不使用)%n",
+                    "[LeadShot v0.48.3] 追跡体数=%d, 予測評価=%d, CV-RMS=%.3f, CA-RMS=%.3f, TURN-RMS=%.3f, 急機動=%d, 補正/転送=%d, 欠測=%d (観測のみ、命中予測には不使用)%n",
                     motion.active(),motion.evaluated(),cv.rootMeanSquare(),
                     ca.rootMeanSquare(),turn.rootMeanSquare(),motion.maneuvers(),
                     motion.teleports(),motion.gaps());
@@ -103,7 +111,7 @@ public final class LeadShotFlightObserverV48 implements ClientModInitializer {
             var model10=tracks.adaptiveCounts(10);
             var model20=tracks.adaptiveCounts(20);
             System.out.printf(Locale.ROOT,
-                    "[LeadShot v0.48.2] 学習済みモデル選択 5t=%s, 10t=%s, 20t=%s (CV/CA/CTの実測誤差を対象ごとに比較・発射には不使用)%n",
+                    "[LeadShot v0.48.3] 学習済みモデル選択 5t=%s, 10t=%s, 20t=%s (CV/CA/CTの実測誤差を対象ごとに比較・発射には不使用)%n",
                     model5,model10,model20);
             System.out.printf(Locale.ROOT,
                     "[LeadShot v0.48] 空中矢の観測ペア=%d RMS誤差=%.5f 最大誤差=%.5f 追跡矢=%d 欠測=%d (クライアント側の推定)%n",

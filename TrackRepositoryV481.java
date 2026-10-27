@@ -21,6 +21,7 @@ public final class TrackRepositoryV481 {
     private final EnumMap<MotionForecastV481.Model, Score> scores =
             new EnumMap<>(MotionForecastV481.Model.class);
     private long worldEpoch = -1;
+    private long lastFrameTick = Long.MIN_VALUE;
     private long gaps, maneuvers, teleports, evictions, evaluated;
 
     private static final class Score {
@@ -60,7 +61,7 @@ public final class TrackRepositoryV481 {
         for (var model : MotionForecastV481.Model.values()) scores.put(model, new Score());
     }
     public void reset(long newEpoch) {
-        contacts.clear(); worldEpoch = newEpoch;
+        contacts.clear(); worldEpoch = newEpoch; lastFrameTick=Long.MIN_VALUE;
         gaps = maneuvers = teleports = evictions = evaluated = 0;
         for (var s : scores.values()) {
             s.count = 0; s.squaredError = s.maxError = 0;
@@ -147,6 +148,24 @@ public final class TrackRepositoryV481 {
         contacts.entrySet().removeIf(e -> !active.contains(e.getKey()) ||
                 tick < e.getValue().latest.sampledClientTick() ||
                 tick - e.getValue().latest.sampledClientTick() > 2);
+    }
+    /** Consume a sampler frame once; preserves per-target held-out forecasts and
+     * performs retain as part of the same operation. Independent calls to observe()
+     * remain for test harnesses and older integrations.
+     */
+    public boolean observeFrame(ObservationBusV483.Frame frame){
+        if(frame==null)return false;
+        if(worldEpoch>=0 && frame.epoch()<worldEpoch)return false;
+        if(frame.epoch()==worldEpoch && frame.tick()<=lastFrameTick)return false;
+        if(worldEpoch!=frame.epoch())reset(frame.epoch());
+        var active=new java.util.HashSet<UUID>(frame.contacts().size());
+        for(var observation:frame.contacts()){
+            active.add(observation.entityId());
+            observe(observation);
+        }
+        retain(frame.epoch(),frame.tick(),active);
+        lastFrameTick=frame.tick();
+        return true;
     }
     public TimedObservationV48 observation(UUID uuid) {
         Track t = contacts.get(uuid); return t == null ? null : t.latest;
